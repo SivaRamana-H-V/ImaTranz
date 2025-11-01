@@ -503,7 +503,7 @@ if st.session_state.results:
             with c12:
                 st.write(f"Detected blocks: {meta.get('detected')}")
                 st.markdown("**Translated Text:**")
-                st.write(', '.join(meta.get("trans_blocks", [])))
+                st.write('\n\n '.join(meta.get("trans_blocks", [])))
         st.markdown("---")
 
     # ✅ ZIP Download — now works after rerun
