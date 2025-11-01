@@ -1,0 +1,14 @@
+# Ignore environment and credentials
+*.json
+.env
+__pycache__/
+*.pyc
+.DS_Store
+
+# Ignore temporary files
+tmp/
+temp/
+*.zip
+
+# Ignore Streamlit cache
+.streamlit/
