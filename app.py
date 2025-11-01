@@ -10,13 +10,14 @@ from urllib.parse import urljoin
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import numpy as np
-import cv2
 from sklearn.cluster import KMeans
 import concurrent.futures
 from google.cloud import vision
 from google.cloud import translate_v2 as translate
 import logging
-import os
+import json
+from google.oauth2 import service_account
+
 
 logging.basicConfig(level=logging.INFO)
 
@@ -31,24 +32,22 @@ HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"),
     "Accept-Language": "en-US,en;q=0.9",
 }
-
-# --- GCP Client Initialization ---
-# Check for credentials environment variable first
-if "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ:
-    st.error("🚨 GCP Authentication Failed: The 'GOOGLE_APPLICATION_CREDENTIALS' environment variable is not set.")
-    st.info(
-        "Please set the environment variable pointing to your Service Account JSON key.")
-    # Use st.stop() to halt execution if authentication is guaranteed to fail
-    # st.stop()
-
 try:
-    vision_client = vision.ImageAnnotatorClient()
-    translate_client = translate.Client()
+    # Load credentials from Streamlit secrets (stored securely in the cloud)
+    gcp_credentials = service_account.Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"]
+    )
+
+    vision_client = vision.ImageAnnotatorClient(credentials=gcp_credentials)
+    translate_client = translate.Client(credentials=gcp_credentials)
+
+    logging.info(
+        "✅ GCP clients initialized successfully using Streamlit secrets.")
+
 except Exception as e:
     st.error(
-        f"🚨 Failed to initialize GCP Clients. Check your permissions and setup. Error: {e}")
-    # st.stop()
-# --- End GCP Client Initialization ---
+        f"🚨 Failed to initialize GCP Clients. Check your secrets configuration. Error: {e}")
+    st.stop()
 
 # ---------------------------
 # Amazon image extraction (Robust Logic)
@@ -471,8 +470,7 @@ if run and url:
                 except Exception as e:
                     st.warning(f"Failed download {u}: {e}")
 
-            proc_futs = {ex.submit(process_image_gcp, img)
-                                   : u for u, img in downloaded.items()}
+            proc_futs = {ex.submit(process_image_gcp, img)                         : u for u, img in downloaded.items()}
             for fut in concurrent.futures.as_completed(proc_futs, timeout=timeout_per_image * len(proc_futs)):
                 u = proc_futs[fut]
                 try:
