@@ -32,6 +32,14 @@ HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"),
     "Accept-Language": "en-US,en;q=0.9",
 }
+
+TEXT_COLOR = 'white'
+FILL_COLOR = (0, 0, 0, 255)
+INITIAL_FONT_SIZE = 50
+FONT_PATH = "arial.ttf"
+DISTANCE_THRESHOLD = 400
+Y_DIFF_THRESHOLD = 2
+
 try:
     # Load credentials from Streamlit secrets (stored securely in the cloud)
     gcp_credentials = service_account.Credentials.from_service_account_info(
@@ -123,80 +131,57 @@ def download_image(url, timeout=12):
 
 
 # ---------------------------
-# GCP Vision OCR: DOCUMENT LEVEL (CRITICAL FIX FOR COHERENCE)
+# GCP Vision OCR: IMAGE LEVEL (CRITICAL FIX FOR COHERENCE)
 # ---------------------------
 def vision_ocr_blocks_texts(pil_img, min_conf=0.0):
     """
-    Uses DOCUMENT_TEXT_DETECTION to get coherent paragraphs/blocks.
-    Returns list of (bbox, text, confidence)
-    bbox = [(x1,y1),(x2,y2),(x3,y3),(x4,y4)]
+    Perform OCR using Google Cloud Vision API.
+    Returns list of dictionaries with 'text' and 'bounding_box'.
     """
+
     buf = BytesIO()
     pil_img.save(buf, format="PNG")
     image = vision.Image(content=buf.getvalue())
 
-    response = vision_client.document_text_detection(image=image)
+    response = vision_client.text_detection(image=image)
     if response.error.message:
         raise Exception(f"Vision API error: {response.error.message}")
 
-    results = []
-
-    # full_text_annotation.pages -> blocks -> paragraphs -> words -> symbols
-    fta = response.full_text_annotation
-    if not fta or not getattr(fta, "pages", None):
+    annotations = response.text_annotations
+    if not annotations:
+        logging.warning("No text annotations detected.")
         return []
 
-    for page in fta.pages:
-        for block in page.blocks:
-            for paragraph in block.paragraphs:
-                # Reconstruct paragraph text from words->symbols
-                words = paragraph.words
-                if not words:
-                    continue
+    texts_data = []
+    # The first item is the full text; others are word-level boxes
+    for text_obj in annotations[1:]:
+        vertices = text_obj.bounding_poly.vertices
+        bbox = []
+        for v in vertices:
+            bbox.append({
+                "x": getattr(v, "x", 0),
+                "y": getattr(v, "y", 0)
+            })
+        texts_data.append({
+            "text": text_obj.description,
+            "bounding_box": bbox
+        })
 
-                paragraph_words = []
-                for w in words:
-                    # each word has symbols list; join them to form the word string
-                    try:
-                        word_text = "".join([s.text for s in w.symbols])
-                    except Exception:
-                        # fallback: try getattr
-                        word_text = getattr(w, "text", "")
-                    if word_text:
-                        paragraph_words.append(word_text)
+    # Optionally save output to a local JSON file
+    try:
+        with open("detected_texts.json", "w", encoding="utf-8") as f:
+            json.dump(texts_data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.warning(f"Failed to write detected_texts.json: {e}")
 
-                if not paragraph_words:
-                    continue
-
-                # join words with spaces to form paragraph text
-                paragraph_text = " ".join(paragraph_words).strip()
-                if not paragraph_text:
-                    continue
-
-                # bounding box from paragraph
-                verts = paragraph.bounding_box.vertices
-                pts = []
-                for v in verts:
-                    x = int(getattr(v, "x", 0) or 0)
-                    y = int(getattr(v, "y", 0) or 0)
-                    pts.append((x, y))
-                while len(pts) < 4:
-                    pts.append(pts[-1])
-
-                # paragraph confidence fallback: try paragraph.confidence, then block
-                conf = getattr(paragraph, "confidence", None)
-                if conf is None:
-                    conf = getattr(block, "confidence", 1.0)
-
-                if conf >= min_conf:
-                    results.append((pts, paragraph_text, float(conf)))
-
-    return results
-
+    logging.info(f"✅ Detected {len(texts_data)} text boxes.")
+    return texts_data
 
 # ---------------------------
 # Translate via GCP (v2 Client)
 # ---------------------------
+
+
 def gcloud_translate_texts(text_list, target="en"):
     """
     Robust translation wrapper using translate_client.
@@ -322,79 +307,159 @@ def translate_and_overlay_image_gcp(pil_img, ocr_results, font_path=FONT_PATH):
     """
     Enhanced version:
     - Adaptive contrast-based color scheme
-    - Dynamic transparency (based on region brightness)
-    - Smart text centering and padding
-    - Crisp anti-aliased rendering for readable overlays
+    - Dynamic transparency
+    - Smart centering and readable overlays
     """
     pil = pil_img.convert("RGBA")
     pil = pil.resize(pil.size, resample=Image.LANCZOS)
     overlay = Image.new("RGBA", pil.size, (255, 255, 255, 0))
     draw_overlay = ImageDraw.Draw(overlay, "RGBA")
 
-    # Extract theme/accent color
-    accent_color = extract_dominant_color(pil)
-    bright = np.mean(accent_color) > 140
+    translated_texts = []  # ✅ collect all translations
 
-    # Colors
-    text_color = (255, 255, 255, 245)
-    shadow_color = (0, 0, 0, 200)
-    box_base = (0, 0, 0, 160) if bright else (0, 0, 0, 210)
-    accent_fill = tuple(list(accent_color) + [255])
+    for item in ocr_results:
+        original_text = item['text']
+        vertices = item['bounding_box']
 
-    # Collect texts
-    texts = [t.strip() for (_, t, _) in ocr_results if t.strip()]
-    if not texts:
-        return pil_img
-
-    translations = gcloud_translate_texts(texts, target="en")
-    if not isinstance(translations, list) or len(translations) != len(texts):
-        translations = [(translations[i] if i < len(translations) else texts[i])
-                        for i in range(len(texts))]
-
-    for (bbox, orig_text, conf), translated in zip(ocr_results, translations):
-        translated = translated.strip()
-        if not translated:
+        if original_text.count('\n') > 1 and len(original_text) > 20:
             continue
 
-        xs = [p[0] for p in bbox]
-        ys = [p[1] for p in bbox]
-        x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
-        box_w, box_h = x2 - x1, y2 - y1
-        if box_w < 8 or box_h < 8:
-            continue
+        # Translate text
+        translated_text = gcloud_translate_texts(
+            [original_text], target="en")[0]
+        translated_texts.append(translated_text)  # ✅ store each translation
 
-        # --- Adjust background transparency by local brightness ---
-        region = pil.crop((x1, y1, x2, y2)).convert("L")
-        brightness = np.mean(np.array(region))
-        # adaptive_alpha = 230 - int((brightness / 255) * 100)
-        box_fill_color = (0, 0, 0, 240)
+        # Extract coordinates
+        x_min = min(v["x"] for v in vertices)
+        y_min = min(v["y"] for v in vertices)
+        x_max = max(v["x"] for v in vertices)
+        y_max = max(v["y"] for v in vertices)
 
-        # --- Fit translated text ---
-        font, wrapped, tw, th = fit_text_into_box(
-            draw_overlay, translated, font_path, box_w * 0.95, box_h * 0.9)
+        box_width = x_max - x_min
+        box_height = y_max - y_min
 
-        # Add small padding for text inside box
-        pad_x, pad_y = int(box_w * 0.05), int(box_h * 0.05)
-        tx = x1 + (box_w - tw) / 2
-        ty = y1 + (box_h - th) / 2
+        # Draw rectangle
+        draw_overlay.rectangle(
+            [(x_min, y_min), (x_max, y_max)], fill=FILL_COLOR)
 
-        # --- Smooth rectangle + accent stripe ---
-        draw_overlay.rounded_rectangle(
-            [x1, y1, x2, y2], radius=6, fill=box_fill_color)
-        draw_overlay.rectangle([x1, y1, x1 + 4, y2], fill=accent_fill)
+        # Fit text inside box
+        font_size = 50
+        while font_size > 5:
+            try:
+                current_font = ImageFont.truetype(FONT_PATH, font_size)
+            except IOError:
+                current_font = ImageFont.load_default()
 
-        # --- Text shadow & highlight ---
+            wrapped_text = textwrap.fill(translated_text, width=max(
+                1, int(box_width / (font_size * 0.6))))
+            _, _, text_width, text_height = draw_overlay.textbbox(
+                (0, 0), wrapped_text, font=current_font)
+
+            if text_width < box_width and text_height < box_height:
+                break
+            font_size -= 1
+
+        x_text = x_min + (box_width - text_width) / 2
+        y_text = y_min + (box_height - text_height) / 2
+
         draw_overlay.multiline_text(
-            (tx + 1.5, ty + 1.5), wrapped, font=font, fill=shadow_color, spacing=2)
-        draw_overlay.multiline_text(
-            (tx, ty), wrapped, font=font, fill=text_color, spacing=2)
+            (x_text, y_text),
+            wrapped_text,
+            fill=TEXT_COLOR,
+            font=current_font,
+            align="center"
+        )
 
-    # Blend overlays smoothly
-    final = Image.alpha_composite(pil, overlay)
-    # Slight smoothing for anti-alias)
-    final = final.filter(ImageFilter.SHARPEN)
-    final = final.convert("RGB")
-    return final, translations
+    final = Image.alpha_composite(pil, overlay).convert("RGB")
+
+    return final, translated_texts  # ✅ return list, not single string
+
+
+def get_box_coords(item):
+    """Helper to extract (x_min, y_min, x_max, y_max) from a data item."""
+    vertices = item["bounding_box"]
+    x_min = min(v["x"] for v in vertices)
+    y_min = min(v["y"] for v in vertices)
+    x_max = max(v["x"] for v in vertices)
+    y_max = max(v["y"] for v in vertices)
+    return x_min, y_min, x_max, y_max
+
+
+def merge_close_boxes(data, distance_threshold, y_diff_threshold):
+    """
+    Merges adjacent bounding boxes and their text if they are close enough
+    horizontally and on the same vertical line.
+    """
+    if not data:
+        return []
+
+    # Sort data primarily by y_min (top line), then by x_min (left to right)
+    # This is crucial for processing text in reading order
+    sorted_data = sorted(data, key=lambda item: (
+        get_box_coords(item)[1], get_box_coords(item)[0]))
+
+    merged_data = []
+
+    # Skip the massive, first bounding box that contains all the text
+    # You can adjust this condition based on your exact data structure
+    current_data_index = 0
+    if len(sorted_data[0]["text"].split('\n')) > 1:
+        merged_data.append(sorted_data[0])
+        current_data_index = 1
+
+    i = current_data_index
+    while i < len(sorted_data):
+        current_item = sorted_data[i]
+        c_xmin, c_ymin, c_xmax, c_ymax = get_box_coords(current_item)
+
+        # Start a new merged entry with the current item
+        merged_text = current_item["text"]
+        new_xmin, new_ymin, new_xmax, new_ymax = c_xmin, c_ymin, c_xmax, c_ymax
+        j = i + 1
+
+        while j < len(sorted_data):
+            next_item = sorted_data[j]
+            n_xmin, n_ymin, n_xmax, n_ymax = get_box_coords(next_item)
+
+            # Check for horizontal proximity (c_xmax to n_xmin)
+            horizontal_gap = n_xmin - c_xmax
+
+            # Check for vertical alignment (assuming they are roughly on the same line)
+            # Use overlap or small difference in y_min/y_max
+            y_diff = abs(c_ymin - n_ymin)
+
+            if horizontal_gap <= distance_threshold and y_diff <= y_diff_threshold:
+                # Merge the text
+                merged_text += next_item["text"]
+
+                # Expand the bounding box
+                new_xmin = min(new_xmin, n_xmin)
+                new_ymin = min(new_ymin, n_ymin)
+                new_xmax = max(new_xmax, n_xmax)
+                new_ymax = max(new_ymax, n_ymax)
+
+                # Move to the next item to check for further merging
+                j += 1
+            else:
+                # Items are too far apart (or on a new line), stop merging
+                break
+
+        # Finalize the merged entry (create a simplified, combined bounding box)
+        merged_data.append({
+            "text": merged_text,
+            "bounding_box": [
+                {"x": new_xmin, "y": new_ymin},
+                {"x": new_xmax, "y": new_ymin},
+                {"x": new_xmax, "y": new_ymax},
+                {"x": new_xmin, "y": new_ymax}
+            ]
+        })
+
+        # Move the main loop index past all merged items
+        i = j
+
+    return merged_data
+
 
 # ---------------------------
 # Full pipeline (per-image)
@@ -407,20 +472,28 @@ def process_image_gcp(pil_img):
     (no text removal)
     """
     try:
-        ocr_blocks = vision_ocr_blocks_texts(pil_img)
+        text_data = vision_ocr_blocks_texts(pil_img)
     except Exception as e:
         return pil_img, pil_img, {"error": str(e)}
 
-    if not ocr_blocks:
+    if not text_data:
         return pil_img, pil_img, {"detected": 0}
 
+    bounding_data = []
+
+    with open('detected_texts.json', 'r', encoding='utf-8') as f:
+        bounding_data = json.load(f)
+
+    merged_data_final = merge_close_boxes(
+        bounding_data, DISTANCE_THRESHOLD, Y_DIFF_THRESHOLD)
     # Draw translated boxes directly
     translated_image, trans_texts = translate_and_overlay_image_gcp(
-        pil_img.copy(), ocr_blocks)
+        pil_img.copy(), merged_data_final, font_path=FONT_PATH
+    )
 
     meta = {
-        "detected": len(ocr_blocks),
-        "orig_blocks": [t for (_, t, _) in ocr_blocks],
+        "detected": len(merged_data_final),
+        "orig_blocks": [item["text"] for item in merged_data_final],
         "trans_blocks": trans_texts
     }
     return pil_img, translated_image, meta
