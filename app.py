@@ -528,7 +528,6 @@ if run and url:
     else:
         st.success(f"Found {len(image_urls)} image(s). Starting processing...")
 
-        st.write(image_urls)
         results = []
 
         # Concurrent download + OCR/Translate
@@ -543,7 +542,7 @@ if run and url:
                 except Exception as e:
                     st.warning(f"Failed download {u}: {e}")
 
-            proc_futs = {ex.submit(process_image_gcp, img)                         : u for u, img in downloaded.items()}
+            proc_futs = {ex.submit(process_image_gcp, img): u for u, img in downloaded.items()}
             for fut in concurrent.futures.as_completed(proc_futs, timeout=timeout_per_image * len(proc_futs)):
                 u = proc_futs[fut]
                 try:
