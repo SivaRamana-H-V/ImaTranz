@@ -371,6 +371,7 @@ def translate_and_overlay_image_gcp(pil_img, ocr_results, font_path=FONT_PATH):
         )
 
     final = Image.alpha_composite(pil, overlay).convert("RGB")
+    final = final.filter(ImageFilter.SHARPEN)
 
     return final, translated_texts  # ✅ return list, not single string
 
@@ -562,10 +563,10 @@ if st.session_state.results:
         st.markdown(f"### Image {idx+1}")
         c1, c2 = st.columns(2)
         with c1:
-            st.image(orig, caption="Original", use_container_width=True)
+            st.image(orig, caption="Original", width=True)
         with c2:
             st.image(final_img, caption="Translated (English)",
-                     use_container_width=True)
+                     width=True)
 
         if meta.get("detected") is not None and meta.get("detected") > 0:
             c11, c12 = st.columns([1, 2])
