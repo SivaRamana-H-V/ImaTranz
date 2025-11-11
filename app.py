@@ -564,10 +564,10 @@ if st.session_state.results:
         c1, c2 = st.columns(2)
         with c1:
             st.image(orig, caption="Original",
-                     width=True, use_column_width=True)
+                     width=True, use_container_width=True)
         with c2:
             st.image(final_img, caption="Translated (English)",
-                     width=True, use_column_width=True)
+                     width=True, use_container_width=True)
 
         if meta.get("detected") is not None and meta.get("detected") > 0:
             c11, c12 = st.columns([1, 2])
