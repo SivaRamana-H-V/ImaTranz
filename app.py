@@ -543,7 +543,7 @@ if run and url:
                 except Exception as e:
                     st.warning(f"Failed download {u}: {e}")
 
-            proc_futs = {ex.submit(process_image_gcp, img): u for u, img in downloaded.items()}
+            proc_futs = {ex.submit(process_image_gcp, img)                         : u for u, img in downloaded.items()}
             for fut in concurrent.futures.as_completed(proc_futs, timeout=timeout_per_image * len(proc_futs)):
                 u = proc_futs[fut]
                 try:
@@ -563,10 +563,11 @@ if st.session_state.results:
         st.markdown(f"### Image {idx+1}")
         c1, c2 = st.columns(2)
         with c1:
-            st.image(orig, caption="Original", width=True)
+            st.image(orig, caption="Original",
+                     width=True, use_column_width=True)
         with c2:
             st.image(final_img, caption="Translated (English)",
-                     width=True)
+                     width=True, use_column_width=True)
 
         if meta.get("detected") is not None and meta.get("detected") > 0:
             c11, c12 = st.columns([1, 2])
