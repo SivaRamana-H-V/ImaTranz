@@ -298,6 +298,13 @@ def fit_text_into_box(draw, text, font_path, box_w, box_h, max_font=None, min_fo
     th = bbox_text[3] - bbox_text[1]
     return font, wrapped, tw, th
 
+
+def upscale_image(pil_img, scale_factor=2):
+    """Upscale image using LANCZOS filter for better quality."""
+    new_size = (int(pil_img.width * scale_factor),
+                int(pil_img.height * scale_factor))
+    return pil_img.resize(new_size, resample=Image.LANCZOS)
+
 # ---------------------------
 # Translate and overlay neatly (FINAL LAYOUT)
 # ---------------------------
@@ -543,7 +550,8 @@ if run and url:
                 except Exception as e:
                     st.warning(f"Failed download {u}: {e}")
 
-            proc_futs = {ex.submit(process_image_gcp, img)                         : u for u, img in downloaded.items()}
+            proc_futs = {ex.submit(process_image_gcp, upscale_image(
+                img, scale_factor=2)): u for u, img in downloaded.items()}
             for fut in concurrent.futures.as_completed(proc_futs, timeout=timeout_per_image * len(proc_futs)):
                 u = proc_futs[fut]
                 try:
@@ -563,11 +571,9 @@ if st.session_state.results:
         st.markdown(f"### Image {idx+1}")
         c1, c2 = st.columns(2)
         with c1:
-            st.image(orig, caption="Original",
-                     width='stretch')
+            st.image(upscale_image(orig), caption="Original")
         with c2:
-            st.image(final_img, caption="Translated (English)",
-                     width='stretch')
+            st.image(final_img, caption="Translated (English)")
 
         if meta.get("detected") is not None and meta.get("detected") > 0:
             c11, c12 = st.columns([1, 2])
