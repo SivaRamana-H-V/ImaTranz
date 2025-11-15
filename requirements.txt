@@ -23,6 +23,3 @@ lama-cleaner
 
 # Others
 typing_extensions
-lama-cleaner
-torch
-torchvision
