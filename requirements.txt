@@ -7,7 +7,6 @@ matplotlib
 # Text processing
 beautifulsoup4
 requests
-textwrap
 
 # Google Cloud clients
 google-cloud-vision
