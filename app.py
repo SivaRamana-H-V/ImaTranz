@@ -230,7 +230,6 @@ def translate_text(ocr_blocks):
 # Full pipeline (per-image)
 # ---------------------------
 
-
 def process_image_gcp(pil_img):
     """
     Full per-image pipeline:
@@ -265,7 +264,7 @@ def process_inpaint_pipeline(img_pil, annotations):
     """
     # 1) Remove original text
     cleaned = inpaint_image_with_boxes(
-        img_pil, annotations, expand_mask=8, prefer_lama=False)
+        img_pil, annotations, expand_mask=12)
 
     # 2) Overlay translated text
     final = overlay_translated_text(

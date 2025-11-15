@@ -26,14 +26,6 @@ import os
 
 MIN_FONT_SIZE = 12
 
-# Try import lama-cleaner style API. If not installed, we'll fallback.
-try:
-    from lama_cleaner.model_manager import ModelManager
-    from lama_cleaner.schema import Config
-    LAMA_AVAILABLE = True
-except Exception:
-    LAMA_AVAILABLE = False
-
 # ---------------------------
 # Utilities
 # ---------------------------
@@ -87,26 +79,6 @@ def cv2_to_pil(img_bgr: np.ndarray) -> Image.Image:
 
 def ensure_font_exists(path: str) -> bool:
     return path and os.path.exists(path)
-
-
-# ---------------------------
-# LaMa inpainting (optional)
-# ---------------------------
-
-
-def inpaint_with_lama(pil_img: Image.Image, mask_pil: Image.Image, device: str = "cpu") -> Image.Image:
-    """
-    Uses lama-cleaner ModelManager API if available.
-    device: 'cpu' or 'cuda' if supported.
-    Raises ImportError if lama-cleaner not available.
-    """
-    if not LAMA_AVAILABLE:
-        raise ImportError("lama-cleaner not available")
-
-    model = ModelManager(name="lama", device=device)
-    cfg = Config()
-    result = model(pil_img.convert("RGB"), mask_pil.convert("L"), cfg)
-    return result
 
 
 # ---------------------------
@@ -514,8 +486,7 @@ def overlay_translated_text(img_pil: Image.Image, annotations: List[Dict], font_
 # ---------------------------
 
 
-def inpaint_image_with_boxes(pil_img: Image.Image, annotations: List[Dict], expand_mask: int = 8,
-                             prefer_lama: bool = True, lama_device: str = "cpu") -> Image.Image:
+def inpaint_image_with_boxes(pil_img: Image.Image, annotations: List[Dict], expand_mask: int = 8) -> Image.Image:
     """
     Create mask from boxes, run LaMa inpaint if available and prefer_lama True,
     otherwise fallback to OpenCV inpaint.
@@ -523,66 +494,5 @@ def inpaint_image_with_boxes(pil_img: Image.Image, annotations: List[Dict], expa
     """
     mask = create_mask_for_boxes(pil_img.size, annotations, expand=expand_mask)
 
-    if prefer_lama and LAMA_AVAILABLE:
-        try:
-            out = inpaint_with_lama(pil_img, mask, device=lama_device)
-            return out
-        except Exception as e:
-            print("LaMa inpainting failed, falling back to OpenCV inpaint:", e)
-
     out = inpaint_with_opencv(pil_img, mask, method='telea')
     return out
-
-
-# ---------------------------
-# Convenience: full process and save
-# ---------------------------
-
-
-def process_and_save(input_path: str,
-                     annotations: List[Dict],
-                     output_path: str,
-                     translated_texts: Optional[List[str]] = None,
-                     font_path: Optional[str] = None,
-                     prefer_lama: bool = True,
-                     lama_device: str = "cpu"):
-    """
-    input_path -> loads image
-    annotations -> list of boxes (same order as translated_texts), you can also include "new_text" per annotation
-    translated_texts -> list of strings (optional) to inject (same order)
-    output_path -> where to save final image
-    """
-    img = Image.open(input_path).convert("RGB")
-
-    if translated_texts:
-        for i, t in enumerate(translated_texts):
-            if i < len(annotations):
-                annotations[i]["new_text"] = t
-
-    inpainted = inpaint_image_with_boxes(
-        img, annotations, expand_mask=8, prefer_lama=prefer_lama, lama_device=lama_device)
-    final = overlay_translated_text(
-        inpainted, annotations, font_path=font_path)
-
-    final.save(output_path, quality=95)
-    return output_path
-
-
-# ---------------------------
-# minimal script usage
-# ---------------------------
-if __name__ == "__main__":
-    import json
-    import sys
-    if len(sys.argv) < 4:
-        print("Usage: python inpaint_and_overlay.py input.jpg annotations.json output.jpg")
-        sys.exit(1)
-    input_p = sys.argv[1]
-    ann_p = sys.argv[2]
-    out_p = sys.argv[3]
-    with open(ann_p, "r", encoding="utf-8") as f:
-        annotations = json.load(f)
-    translated = [ann.get("translated_text") or ann.get(
-        "new_text") or "" for ann in annotations]
-    process_and_save(input_p, annotations, out_p, translated_texts=translated)
-    print("Saved ->", out_p)

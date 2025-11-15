@@ -7,7 +7,7 @@ matplotlib
 # Text processing
 beautifulsoup4
 requests
-textwrap3
+textwrap
 
 # Google Cloud clients
 google-cloud-vision
@@ -17,9 +17,6 @@ google-auth-oauthlib
 
 # Streamlit app
 streamlit
-
-# Lama Cleaner (optional)
-lama-cleaner==1.2.0
 
 # Others
 typing_extensions
