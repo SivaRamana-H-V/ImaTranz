@@ -226,91 +226,6 @@ def translate_text(ocr_blocks):
         b["new_text"] = tr
     return ocr_blocks
 
-
-def get_box_coords(item):
-    """Helper to extract (x_min, y_min, x_max, y_max) from a data item."""
-    vertices = item["bounding_box"]
-    x_min = min(v["x"] for v in vertices)
-    y_min = min(v["y"] for v in vertices)
-    x_max = max(v["x"] for v in vertices)
-    y_max = max(v["y"] for v in vertices)
-    return x_min, y_min, x_max, y_max
-
-
-def merge_vision_boxes(text_items, min_height=15, y_merge_thresh=25):
-    """
-    Merge small Vision word-boxes into readable horizontal line blocks.
-    This is CRITICAL for good translation placement.
-
-    Steps:
-        1. Remove boxes that are too thin (Vision garbage)
-        2. Sort items by Y position
-        3. Group into horizontal lines
-        4. Merge words into a single bounding box per line
-    """
-    cleaned = []
-
-    # 1) Remove tiny broken boxes
-    for t in text_items:
-        poly = t["bounding_box"]
-        xs = [p["x"] for p in poly]
-        ys = [p["y"] for p in poly]
-        h = max(ys) - min(ys)
-        if h >= min_height:
-            cleaned.append(t)
-
-    if not cleaned:
-        return []
-
-    # 2) Sort by Y first
-    cleaned.sort(key=lambda a: min(p["y"] for p in a["bounding_box"]))
-
-    merged = []
-    current_line = [cleaned[0]]
-
-    def in_same_line(a, b):
-        ay1 = min(p["y"] for p in a["bounding_box"])
-        by1 = min(p["y"] for p in b["bounding_box"])
-        return abs(ay1 - by1) < y_merge_thresh
-
-    for i in range(1, len(cleaned)):
-        if in_same_line(current_line[-1], cleaned[i]):
-            current_line.append(cleaned[i])
-        else:
-            merged.append(current_line)
-            current_line = [cleaned[i]]
-
-    merged.append(current_line)
-
-    # 3) Build merged blocks
-    final = []
-    for line in merged:
-        line = sorted(line, key=lambda a: min(
-            p["x"] for p in a["bounding_box"]))
-        text_combined = " ".join(item["text"] for item in line)
-
-        xs = []
-        ys = []
-        for item in line:
-            for p in item["bounding_box"]:
-                xs.append(p["x"])
-                ys.append(p["y"])
-
-        x1, x2 = min(xs), max(xs)
-        y1, y2 = min(ys), max(ys)
-
-        final.append({
-            "text": text_combined.strip(),
-            "bounding_box": [
-                {"x": x1, "y": y1},
-                {"x": x2, "y": y1},
-                {"x": x2, "y": y2},
-                {"x": x1, "y": y2},
-            ]
-        })
-
-    return final
-
 # ---------------------------
 # Full pipeline (per-image)
 # ---------------------------
@@ -334,11 +249,9 @@ def process_image_gcp(pil_img):
     if not blocks:
         return pil_img, pil_img, {"detected": 0}
 
-    # 2) Merge nearby boxes into lines/blocks (scale-aware)
-    # merged = merge_vision_boxes(blocks)
-    # 3) Translate
+    # 2) Translate
     translated_blocks = translate_text(blocks)
-    # 4) Inpaint & overlay
+    # 3) Inpaint & overlay
     cleaned, final_img, meta = process_inpaint_pipeline(
         pil_img.copy(), translated_blocks)
     meta["detected"] = len(translated_blocks)
