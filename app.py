@@ -17,7 +17,7 @@ from google.cloud import translate_v2 as translate
 import logging
 import json
 from google.oauth2 import service_account
-
+from inpaint_and_overlay import inpaint_image_with_boxes, overlay_translated_text
 
 logging.basicConfig(level=logging.INFO)
 
@@ -71,7 +71,7 @@ def normalize_amazon_image_url(url: str) -> str:
     m = re.search(r"(https?://[^/]+/images/I/[^.]+)\.(?:jpg|png|jpeg)$", url)
     if m:
         base = m.group(1)
-        return base + "._SL1500_.jpg"
+        return base + ".jpg"
     return url
 
 
@@ -219,86 +219,6 @@ def gcloud_translate_texts(text_list, target="en"):
         return text_list
 
 
-# ---------------------------
-# Color extraction (Adaptive Color)
-# ---------------------------
-def extract_dominant_color(pil_img, n_colors=3):
-    try:
-        img = pil_img.copy().convert("RGB").resize((120, 120))
-        arr = np.array(img).reshape(-1, 3).astype(float)
-        kmeans = KMeans(n_clusters=n_colors, n_init='auto')
-        kmeans.fit(arr)
-        colors = kmeans.cluster_centers_.astype(int)
-        colors = sorted(colors, key=lambda c: np.mean(c))
-        pick = colors[len(colors) // 2]
-        return tuple(map(int, pick))
-    except Exception:
-        return (40, 160, 80)
-
-
-# ---------------------------
-# Dynamic Font Fitter
-# ---------------------------
-
-def fit_text_into_box(draw, text, font_path, box_w, box_h, max_font=None, min_font=8):
-    """Dynamically fits text by shrinking/wrapping to box dimensions using modern Pillow methods."""
-    if max_font is None:
-        max_font = int(box_h * 0.9)
-    font_size = max(min_font, max_font)
-
-    # Use a dummy string and a standard font size (e.g., 10) to get a base width for wrapping
-    try:
-        base_font_for_wrap = ImageFont.truetype(font_path, 10)
-    except Exception:
-        base_font_for_wrap = ImageFont.load_default()
-
-    while font_size >= min_font:
-        try:
-            font = ImageFont.truetype(font_path, font_size)
-        except Exception:
-            font = ImageFont.load_default()
-
-        # 1. Estimate average character width for text wrapping (using base font is safe here)
-        # Using textbbox to find the width of 'M' at a fixed size (10) for the wrapping calculation
-
-        # ❌ ERROR SOURCE REMOVED: Replaced font.getlength/font.getsize with modern call
-
-        # Temporarily use the small base font to estimate wrap width
-        dummy_bbox = draw.textbbox((0, 0), "M", font=base_font_for_wrap)
-        avg_char_w = dummy_bbox[2] - dummy_bbox[0]
-
-        max_chars = max(1, int(box_w / max(1, avg_char_w)))
-        wrapped = "\n".join(textwrap.wrap(text, width=max_chars))
-
-        # 2. Multiline text size calculation using draw.multiline_textbbox (Correct Method)
-        bbox_text = draw.multiline_textbbox(
-            (0, 0), wrapped, font=font, spacing=2)
-        tw = bbox_text[2] - bbox_text[0]
-        th = bbox_text[3] - bbox_text[1]
-
-        if tw <= box_w - 4 and th <= box_h - 4:
-            return font, wrapped, tw, th
-        font_size -= 1
-
-    # Final fallback: use min font and truncate (Simplified logic to avoid old function calls)
-    try:
-        font = ImageFont.truetype(font_path, min_font)
-    except Exception:
-        font = ImageFont.load_default()
-
-    # Fallback wrapping using a conservative character estimate
-    max_chars_fallback = int(box_w / 6)
-    truncated = text[: max(5, int(len(text) * 0.7))] + "…"
-    wrapped = "\n".join(textwrap.wrap(
-        truncated, width=max(1, max_chars_fallback)))
-
-    # Final measurement using the correct method
-    bbox_text = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=2)
-    tw = bbox_text[2] - bbox_text[0]
-    th = bbox_text[3] - bbox_text[1]
-    return font, wrapped, tw, th
-
-
 def upscale_image(pil_img, scale_factor=2):
     """Upscale image using LANCZOS filter for better quality."""
     new_size = (int(pil_img.width * scale_factor),
@@ -306,27 +226,21 @@ def upscale_image(pil_img, scale_factor=2):
     return pil_img.resize(new_size, resample=Image.LANCZOS)
 
 # ---------------------------
-# Translate and overlay neatly (FINAL LAYOUT)
+# Translate (FINAL LAYOUT)
 # ---------------------------
 
 
-def translate_and_overlay_image_gcp(pil_img, ocr_results, font_path=FONT_PATH):
+def translate_text(ocr_results):
     """
     Enhanced version:
     - Adaptive contrast-based color scheme
     - Dynamic transparency
     - Smart centering and readable overlays
     """
-    pil = pil_img.convert("RGBA")
-    pil = pil.resize(pil.size, resample=Image.LANCZOS)
-    overlay = Image.new("RGBA", pil.size, (255, 255, 255, 0))
-    draw_overlay = ImageDraw.Draw(overlay, "RGBA")
-
-    translated_texts = []  # ✅ collect all translations
+    translated_annotations = ocr_results.copy()  # ✅ initialize as a list
 
     for item in ocr_results:
         original_text = item['text']
-        vertices = item['bounding_box']
 
         if original_text.count('\n') > 1 and len(original_text) > 20:
             continue
@@ -334,53 +248,9 @@ def translate_and_overlay_image_gcp(pil_img, ocr_results, font_path=FONT_PATH):
         # Translate text
         translated_text = gcloud_translate_texts(
             [original_text], target="en")[0]
-        translated_texts.append(translated_text)  # ✅ store each translation
+        item['new_text'] = translated_text
 
-        # Extract coordinates
-        x_min = min(v["x"] for v in vertices)
-        y_min = min(v["y"] for v in vertices)
-        x_max = max(v["x"] for v in vertices)
-        y_max = max(v["y"] for v in vertices)
-
-        box_width = x_max - x_min
-        box_height = y_max - y_min
-
-        # Draw rectangle
-        draw_overlay.rectangle(
-            [(x_min, y_min), (x_max, y_max)], fill=FILL_COLOR)
-
-        # Fit text inside box
-        font_size = 50
-        while font_size > 5:
-            try:
-                current_font = ImageFont.truetype(FONT_PATH, font_size)
-            except IOError:
-                current_font = ImageFont.load_default()
-
-            wrapped_text = textwrap.fill(translated_text, width=max(
-                1, int(box_width / (font_size * 0.6))))
-            _, _, text_width, text_height = draw_overlay.textbbox(
-                (0, 0), wrapped_text, font=current_font)
-
-            if text_width < box_width and text_height < box_height:
-                break
-            font_size -= 1
-
-        x_text = x_min + (box_width - text_width) / 2
-        y_text = y_min + (box_height - text_height) / 2
-
-        draw_overlay.multiline_text(
-            (x_text, y_text),
-            wrapped_text,
-            fill=TEXT_COLOR,
-            font=current_font,
-            align="center"
-        )
-
-    final = Image.alpha_composite(pil, overlay).convert("RGB")
-    final = final.filter(ImageFilter.SHARPEN)
-
-    return final, translated_texts  # ✅ return list, not single string
+    return translated_annotations  # ✅ return list, not single string
 
 
 def get_box_coords(item):
@@ -473,7 +343,6 @@ def merge_close_boxes(data, distance_threshold, y_diff_threshold):
 # Full pipeline (per-image)
 # ---------------------------
 
-
 def process_image_gcp(pil_img):
     """
     OCR → Translate → Draw boxes
@@ -494,23 +363,42 @@ def process_image_gcp(pil_img):
 
     merged_data_final = merge_close_boxes(
         bounding_data, DISTANCE_THRESHOLD, Y_DIFF_THRESHOLD)
-    # Draw translated boxes directly
-    translated_image, trans_texts = translate_and_overlay_image_gcp(
-        pil_img.copy(), merged_data_final, font_path=FONT_PATH
+
+    translated_annotations = translate_text(merged_data_final)
+    # overlay neatly
+    cleaned, translated_image, meta = process_inpaint_pipeline(
+        pil_img.copy(), translated_annotations
     )
 
+    return cleaned, translated_image, meta
+
+
+def process_inpaint_pipeline(img_pil, annotations):
+    """
+    This will be the function called by Streamlit.
+    Must return (cleaned, final_image, meta)
+    """
+    # 1) Remove original text
+    cleaned = inpaint_image_with_boxes(
+        img_pil, annotations, expand_mask=8, prefer_lama=False)
+
+    # 2) Overlay translated text
+    final = overlay_translated_text(
+        cleaned, annotations, font_path="arial.ttf")
+
+    # Metadata for UI
     meta = {
-        "detected": len(merged_data_final),
-        "orig_blocks": [item["text"] for item in merged_data_final],
-        "trans_blocks": trans_texts
+        "detected": len(annotations),
+        "orig_blocks": [a["text"] for a in annotations],
+        "trans_blocks": [a.get("new_text", a["text"]) for a in annotations]
     }
-    return pil_img, translated_image, meta
+
+    return cleaned, final, meta
+
 
 # ---------------------------
 # Streamlit UI wiring
 # ---------------------------
-
-
 if "results" not in st.session_state:
     st.session_state.results = []
 
