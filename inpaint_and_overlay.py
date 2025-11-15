@@ -17,7 +17,7 @@ Annotations format (accepted):
 You may include "translated_text" or "new_text" in each annotation; that will be used when overlaying.
 """
 from typing import List, Dict, Tuple, Optional
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import cv2
 import math
