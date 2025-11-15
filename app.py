@@ -61,25 +61,6 @@ except Exception as e:
         f"🚨 Failed to initialize GCP Clients. Check your secrets configuration. Error: {e}")
     st.stop()
 
-# inpaint_and_overlay.py
-"""
-inpaint_and_overlay.py
-
-Functions:
- - inpaint_image_with_boxes(image_pil, annotations, prefer_lama=True, lama_device='cpu')
- - overlay_translated_text(image_pil, annotations, font_path=None)
- - process_and_save(input_path, annotations, output_path, translated_texts=None, font_path=None, prefer_lama=True)
-
-Annotations format (accepted):
-[
-  { "text": "柔らかい",
-    "bounding_box": [{"x":514,"y":37}, {"x":608,"y":37}, {"x":608,"y":57}, {"x":514,"y":57}] },
-  or
-  { "text": "...", "bounding_box": [[514,37], [608,37], [608,57], [514,57]] }
-]
-You may include "translated_text" or "new_text" in each annotation; that will be used when overlaying.
-"""
-
 MIN_FONT_SIZE = 12
 
 # ---------------------------
