@@ -25,9 +25,6 @@ import textwrap
 import os
 
 MIN_FONT_SIZE = 12
-# used instead of 0.25 (increase to expand boxes more horizontally)
-MAX_EXPAND_X_FRAC = 0.35
-MAX_EXPAND_Y_FRAC = 0.18   # used instead of 0.12
 
 # Try import lama-cleaner style API. If not installed, we'll fallback.
 try:
@@ -509,12 +506,6 @@ def overlay_translated_text(img_pil: Image.Image, annotations: List[Dict], font_
         ry = max(0, min(h_img - rotated.height, ry))
 
         out.alpha_composite(rotated, dest=(int(round(rx)), int(round(ry))))
-
-        # debug
-        print("DBG_BOX:", {"box_w": box_w, "box_h": box_h, "aspect": aspect,
-                           "want_vertical": want_vertical, "start_fs": start_fs,
-                           "chosen_fs": used_fs, "text_w": text_w, "text_h": text_h,
-                           "place_rect": (place_x1, place_y1, place_x2, place_y2)})
 
     return out.convert("RGB")
 
