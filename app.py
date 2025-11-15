@@ -43,9 +43,8 @@ INITIAL_FONT_SIZE = 50
 FONT_PATH = "arial.ttf"
 DISTANCE_THRESHOLD = 400
 Y_DIFF_THRESHOLD = 2
-
 try:
-    # Load credentials from Streamlit secrets (stored securely in the cloud)
+    # 1️⃣ Streamlit Cloud method (secrets.toml)
     gcp_credentials = service_account.Credentials.from_service_account_info(
         st.secrets["gcp_service_account"]
     )
@@ -57,20 +56,30 @@ try:
         "✅ GCP clients initialized successfully using Streamlit secrets.")
 
 except Exception as e:
+    logging.warning(f"Streamlit secrets failed: {e}")
+
     try:
-        # Fallback: try to initialize without explicit credentials (e.g., local env var)
-        gcp_credentials = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+        # 2️⃣ Fallback: Environment variable (Render.com, local machine)
+        creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+
+        gcp_credentials = service_account.Credentials.from_service_account_info(
+            creds_dict
+        )
+
         vision_client = vision.ImageAnnotatorClient(
             credentials=gcp_credentials)
         translate_client = translate.Client(credentials=gcp_credentials)
-        logging.info(
-            "✅ GCP clients initialized successfully using default credentials.")
-    except Exception as e:
-        logging.error(f"Failed to initialize GCP clients: {e}")
-    st.error(
-        f"🚨 Failed to initialize GCP Clients. Check your secrets configuration. Error: {e}")
-    st.stop()
 
+        logging.info(
+            "✅ GCP clients initialized successfully using environment variable.")
+
+    except Exception as e2:
+        logging.error(f"❌ Failed to initialize GCP clients: {e2}")
+        st.error(
+            f"🚨 Failed to initialize GCP Clients.\n"
+            "Check Streamlit secrets or Render environment variables."
+        )
+        st.stop()
 MIN_FONT_SIZE = 12
 
 # ---------------------------
