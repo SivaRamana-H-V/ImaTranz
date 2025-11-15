@@ -57,6 +57,16 @@ try:
         "✅ GCP clients initialized successfully using Streamlit secrets.")
 
 except Exception as e:
+    try:
+        # Fallback: try to initialize without explicit credentials (e.g., local env var)
+        gcp_credentials = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+        vision_client = vision.ImageAnnotatorClient(
+            credentials=gcp_credentials)
+        translate_client = translate.Client(credentials=gcp_credentials)
+        logging.info(
+            "✅ GCP clients initialized successfully using default credentials.")
+    except Exception as e:
+        logging.error(f"Failed to initialize GCP clients: {e}")
     st.error(
         f"🚨 Failed to initialize GCP Clients. Check your secrets configuration. Error: {e}")
     st.stop()
