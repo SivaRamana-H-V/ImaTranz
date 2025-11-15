@@ -1,24 +1,33 @@
+# inpaint_and_overlay.py
 """
 inpaint_and_overlay.py
 
 Functions:
- - inpaint_image_with_boxes(image_pil, annotations, use_lama=True)
- - overlay_translated_text(image_pil, annotations, font_path)
- - process_and_save(input_path, annotations, output_path, translated_texts, font_path)
+ - inpaint_image_with_boxes(image_pil, annotations, prefer_lama=True, lama_device='cpu')
+ - overlay_translated_text(image_pil, annotations, font_path=None)
+ - process_and_save(input_path, annotations, output_path, translated_texts=None, font_path=None, prefer_lama=True)
 
-annotations format (list of dicts):
+Annotations format (accepted):
 [
   { "text": "柔らかい",
     "bounding_box": [{"x":514,"y":37}, {"x":608,"y":37}, {"x":608,"y":57}, {"x":514,"y":57}] },
-  ...
+  or
+  { "text": "...", "bounding_box": [[514,37], [608,37], [608,57], [514,57]] }
 ]
-
-translated_texts must match annotations order OR you can include "new_text" inside each annotation.
+You may include "translated_text" or "new_text" in each annotation; that will be used when overlaying.
 """
-from typing import List, Dict, Tuple
-from PIL import Image, ImageDraw, ImageFont
+from typing import List, Dict, Tuple, Optional
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import numpy as np
 import cv2
+import math
+import textwrap
+import os
+
+MIN_FONT_SIZE = 12
+# used instead of 0.25 (increase to expand boxes more horizontally)
+MAX_EXPAND_X_FRAC = 0.35
+MAX_EXPAND_Y_FRAC = 0.18   # used instead of 0.12
 
 # Try import lama-cleaner style API. If not installed, we'll fallback.
 try:
@@ -33,11 +42,38 @@ except Exception:
 # ---------------------------
 
 
+def normalize_polygon(poly):
+    """
+    Accepts polygon in either list-of-dicts [{"x":..,"y":..}, ...]
+    or list-of-lists [[x,y], ...] and returns list-of-tuples [(x,y),...]
+    """
+    if not poly:
+        return []
+    out = []
+    # dict style
+    if isinstance(poly[0], dict):
+        for p in poly:
+            x = float(p.get("x", p.get("X", 0)))
+            y = float(p.get("y", p.get("Y", 0)))
+            out.append((x, y))
+    else:
+        for p in poly:
+            out.append((float(p[0]), float(p[1])))
+    return out
+
+
 def poly_to_rect_coords(polygon: List[Dict[str, int]]) -> Tuple[int, int, int, int]:
-    xs = [p["x"] for p in polygon]
-    ys = [p["y"] for p in polygon]
-    x_min, x_max = min(xs), max(xs)
-    y_min, y_max = min(ys), max(ys)
+    """
+    Returns integer rectangle coordinates x_min, y_min, x_max, y_max
+    polygon may be a list-of-dicts or list-of-lists
+    """
+    pts = normalize_polygon(polygon)
+    if not pts:
+        return 0, 0, 0, 0
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    x_min, x_max = int(min(xs)), int(max(xs))
+    y_min, y_max = int(min(ys)), int(max(ys))
     return x_min, y_min, x_max, y_max
 
 
@@ -51,44 +87,59 @@ def cv2_to_pil(img_bgr: np.ndarray) -> Image.Image:
     rgb = img_bgr[:, :, ::-1]
     return Image.fromarray(rgb)
 
+
+def ensure_font_exists(path: str) -> bool:
+    return path and os.path.exists(path)
+
+
 # ---------------------------
-# LaMa inpainting (CPU) - lightweight usage
+# LaMa inpainting (optional)
 # ---------------------------
 
 
-def inpaint_with_lama(pil_img: Image.Image, mask_pil: Image.Image) -> Image.Image:
+def inpaint_with_lama(pil_img: Image.Image, mask_pil: Image.Image, device: str = "cpu") -> Image.Image:
     """
-    Requires lama-cleaner installed and a ModelManager API.
-    This uses device="cpu". If not available, raise ImportError.
+    Uses lama-cleaner ModelManager API if available.
+    device: 'cpu' or 'cuda' if supported.
+    Raises ImportError if lama-cleaner not available.
     """
     if not LAMA_AVAILABLE:
         raise ImportError("lama-cleaner not available")
 
-    # initialize model manager (cached by lama-cleaner)
-    model = ModelManager(name="lama", device="cpu")  # device cpu
+    model = ModelManager(name="lama", device=device)
     cfg = Config()
-    # Convert PIL to expected input: PIL Image and mask
     result = model(pil_img.convert("RGB"), mask_pil.convert("L"), cfg)
     return result
 
+
 # ---------------------------
-# OpenCV fallback (fast, CPU)
+# OpenCV fallback inpaint (improved)
 # ---------------------------
 
 
-def inpaint_with_opencv(pil_img: Image.Image, mask_pil: Image.Image, method='telea') -> Image.Image:
+def inpaint_with_opencv(pil_img: Image.Image, mask_pil: Image.Image, method: str = 'telea', dilate_iters: int = 1,
+                        blur_ksize: int = 7, inpaint_radius: int = 3) -> Image.Image:
     """
-    Uses OpenCV inpaint as fallback. Not as perfect as deep inpaint but decent for many cases.
+    Uses OpenCV inpaint as fallback. We dilate and blur the mask to make results smoother.
     method: 'telea' or 'ns'
     """
     bgr = pil_to_cv2(pil_img)
-    mask = np.array(mask_pil.convert("L"))
-    # OpenCV expects mask binary 0/255 (uint8)
+    mask = np.array(mask_pil.convert("L"), dtype=np.uint8)
+
     _, mask_bin = cv2.threshold(mask, 1, 255, cv2.THRESH_BINARY)
+    if dilate_iters > 0:
+        kernel = np.ones((3, 3), np.uint8)
+        mask_bin = cv2.dilate(mask_bin, kernel, iterations=dilate_iters)
+
+    if blur_ksize and blur_ksize % 2 == 1:
+        mask_blur = cv2.GaussianBlur(mask_bin, (blur_ksize, blur_ksize), 0)
+        _, mask_bin = cv2.threshold(mask_blur, 10, 255, cv2.THRESH_BINARY)
+
     inpaint_flag = cv2.INPAINT_TELEA if method == 'telea' else cv2.INPAINT_NS
-    # inpaint requires 8-bit 3-ch image
-    out = cv2.inpaint(bgr, mask_bin, inpaintRadius=3, flags=inpaint_flag)
+    out = cv2.inpaint(
+        bgr, mask_bin, inpaintRadius=inpaint_radius, flags=inpaint_flag)
     return cv2_to_pil(out)
+
 
 # ---------------------------
 # Create mask from annotations (boxes)
@@ -97,15 +148,18 @@ def inpaint_with_opencv(pil_img: Image.Image, mask_pil: Image.Image, method='tel
 
 def create_mask_for_boxes(img_size: Tuple[int, int], annotations: List[Dict], expand: int = 6) -> Image.Image:
     """
-    Build a single mask image (L) where box regions are white (255).
+    Build a single mask image (L) where box/polygon regions are white (255).
     expand: pixels to expand bounding box (helps remove nearby strokes)
     """
     mask = Image.new("L", img_size, 0)
     draw = ImageDraw.Draw(mask)
     for ann in annotations:
-        poly = ann["bounding_box"]
+        poly_raw = ann.get("bounding_box") or ann.get(
+            "bbox") or ann.get("poly") or ann.get("polygon")
+        if not poly_raw:
+            continue
+        poly = normalize_polygon(poly_raw)
         x1, y1, x2, y2 = poly_to_rect_coords(poly)
-        # expand conservatively
         x1 = max(0, x1 - expand)
         y1 = max(0, y1 - expand)
         x2 = min(img_size[0], x2 + expand)
@@ -113,103 +167,354 @@ def create_mask_for_boxes(img_size: Tuple[int, int], annotations: List[Dict], ex
         draw.rectangle([x1, y1, x2, y2], fill=255)
     return mask
 
+
 # ---------------------------
-# Overlay translated text nicely
+# Robust angle detection
 # ---------------------------
 
 
-def overlay_translated_text(img_pil: Image.Image, annotations: List[Dict], font_path: str = "arial.ttf"):
+def get_text_angle(poly_pts: List[Tuple[float, float]]) -> float:
     """
-    Draws translated/new text inside each bounding box.
-    Each annotation should either have "new_text" or we expect separate translated_texts list externally.
-    Handles vertical boxes by rotating rendered text.
+    Compute robust angle (degrees) for the polygon using cv2.minAreaRect.
+    Returns angle in degrees (positive means rotation angle from horizontal).
     """
+    if not poly_pts or len(poly_pts) < 2:
+        return 0.0
+    try:
+        pts = np.array(poly_pts, dtype=np.float32)
+        rect = cv2.minAreaRect(pts)  # ((cx,cy),(w,h),angle)
+        angle = rect[2]
+        if angle < -45:
+            angle = angle + 90
+        return float(angle)
+    except Exception:
+        (x1, y1), (x2, y2) = poly_pts[0], poly_pts[1]
+        return math.degrees(math.atan2(y2 - y1, x2 - x1))
+
+
+# ---------------------------
+# Choose font by script hint (simple)
+# ---------------------------
+
+
+def choose_font_for_text(sample_text: str, fallback: Optional[str] = None) -> Optional[str]:
+    """
+    Very simple heuristic to choose a font path for a given sample_text.
+    You should provide paths to fonts available on your system.
+    Returns path to a font file or None to use PIL default.
+    """
+    FONT_MAP = {
+        "cjk": ["NotoSansCJK-Regular.ttc", "NotoSansCJKsc-Regular.otf"],
+        "devanagari": ["NotoSansDevanagari-Regular.ttf"],
+        "arabic": ["NotoNaskhArabic-Regular.ttf", "NotoSansArabic.ttf"],
+        "thai": ["NotoSansThai-Regular.ttf"],
+        "default": [fallback or "arial.ttf"]
+    }
+
+    candidates = FONT_MAP.get("default")
+    for ch in sample_text:
+        code = ord(ch)
+        if 0x4E00 <= code <= 0x9FFF:
+            candidates = FONT_MAP.get("cjk")
+            break
+        if 0x0900 <= code <= 0x097F:
+            candidates = FONT_MAP.get("devanagari")
+            break
+        if 0x0600 <= code <= 0x06FF:
+            candidates = FONT_MAP.get("arabic")
+            break
+        if 0x0E00 <= code <= 0x0E7F:
+            candidates = FONT_MAP.get("thai")
+            break
+
+    for p in candidates:
+        if p and os.path.exists(p):
+            return p
+    return None
+
+
+# ---------------------------
+# Helpers for adaptive color & sampling
+# ---------------------------
+
+
+def sample_background_color(img: Image.Image, bbox: Tuple[int, int, int, int], pad: int = 6) -> Tuple[int, int, int]:
+    """Sample average RGB color around bbox (pad defines how many px around)"""
+    x1, y1, x2, y2 = bbox
+    w, h = img.size
+    sx = max(0, x1 - pad)
+    sy = max(0, y1 - pad)
+    ex = min(w, x2 + pad)
+    ey = min(h, y2 + pad)
+    crop = img.crop((sx, sy, ex, ey)).convert("RGB")
+    arr = np.array(crop)
+    if arr.size == 0:
+        return (255, 255, 255)
+    mean = tuple(map(int, arr.reshape(-1, 3).mean(axis=0)))
+    return mean
+
+
+def choose_text_color(rgb: Tuple[int, int, int]) -> Tuple[int, int, int]:
+    """Return black or white text color for best contrast on rgb"""
+    r, g, b = rgb
+    # luminance formula
+    lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return (0, 0, 0) if lum > 160 else (255, 255, 255)
+
+
+# ---------------------------
+# Overlay translated text nicely (optimized)
+# ---------------------------
+
+def overlay_translated_text(img_pil: Image.Image, annotations: List[Dict], font_path: Optional[str] = None):
+    """
+    Overlay translated/new_text contained in annotations into the bounding boxes.
+    Adaptive font size, expand bounding area if needed, vertical stacking for tall boxes,
+    adaptive text color/background blending.
+    Returns a PIL RGB image.
+    """
+    # safety minimum font size for readability (project requirement)
+    MIN_FONT_SIZE = 12
+
     out = img_pil.convert("RGBA")
-    draw = ImageDraw.Draw(out)
+    w_img, h_img = out.size
 
     for ann in annotations:
-        poly = ann["bounding_box"]
+        raw_poly = ann.get("bounding_box") or ann.get(
+            "bbox") or ann.get("poly") or ann.get("polygon")
+        if not raw_poly:
+            continue
+        poly = normalize_polygon(raw_poly)
+        if not poly:
+            continue
+
         x1, y1, x2, y2 = poly_to_rect_coords(poly)
-        box_w = x2 - x1
-        box_h = y2 - y1
-        new_text = ann.get("new_text", ann.get(
-            "translated_text", ann.get("text", "")))
-        # if text is empty skip
+        box_w = max(2, x2 - x1)
+        box_h = max(2, y2 - y1)
+
+        new_text = (ann.get("new_text") or ann.get(
+            "translated_text") or ann.get("text") or "").strip()
         if not new_text:
             continue
 
-        # Choose font size to fit (binary search)
-        # Start from large and reduce until fits
-        max_font = max(8, int(box_h * 0.9))
-        good_font = None
-        good_wrapped = new_text
-        for fs in range(max_font, 7, -1):
+        # choose font candidate
+        chosen_font = font_path
+        if font_path is None:
+            maybe = choose_font_for_text(new_text)
+            if maybe:
+                chosen_font = maybe
+
+        # detect vertical (tall narrow)
+        aspect = float(box_h) / max(1.0, box_w)
+        want_vertical = aspect >= 2.5  # stricter threshold for true vertical labels
+
+        # Heuristics for font sizing:
+        start_fs = max(MIN_FONT_SIZE, int(box_h * 0.36))
+        start_fs = min(start_fs, 72)
+        max_try_fs = min(72, int(min(w_img, h_img) * 0.2))
+
+        if want_vertical:
+            # base on box width for vertical labels
+            start_fs = max(MIN_FONT_SIZE, int(box_w * 0.7))
+
+        final_font = None
+        final_wrapped = new_text
+        text_w = text_h = 0
+        used_fs = start_fs
+
+        def load_font(fs):
             try:
-                font = ImageFont.truetype(font_path, fs)
+                return ImageFont.truetype(chosen_font, fs) if chosen_font else ImageFont.load_default()
             except Exception:
-                font = ImageFont.load_default()
-            # estimate size with multiline_textbbox
-            wrapped = new_text
-            # naive wrap for long text
-            # guess chars per line ~ box_w / (fs * 0.6)
-            est_chars = max(1, int(box_w / max(1, fs * 0.6)))
-            if len(new_text) > est_chars:
-                import textwrap
-                wrapped = "\n".join(textwrap.wrap(new_text, width=est_chars))
-            bbox = draw.multiline_textbbox(
-                (0, 0), wrapped, font=font, spacing=2)
+                return ImageFont.load_default()
+
+        # Candidates: try larger sizes first to prefer big readable labels
+        if len(new_text.split()) <= 3 and not want_vertical:
+            # short labels - allow larger tries
+            high_start = min(start_fs + 10, max_try_fs)
+        else:
+            high_start = min(start_fs + 6, max_try_fs)
+        fs_candidates = list(range(high_start, MIN_FONT_SIZE - 1, -1))
+
+        # ensure wrapped defined
+        wrapped = new_text
+
+        for fs in fs_candidates:
+            font = load_font(fs)
+            # wrapping strategy
+            if want_vertical:
+                words = [w for w in new_text.split() if w.strip()]
+                if len(words) <= 3:
+                    # per-char vertical stack (remove spaces)
+                    wrapped = "\n".join(list(new_text.replace(" ", "")))
+                else:
+                    est_chars = max(1, int(box_w / max(1, (fs * 0.6))))
+                    wrapped = "\n".join(textwrap.wrap(
+                        new_text, width=max(est_chars, 1),
+                        break_long_words=False, break_on_hyphens=False))
+            else:
+                est_chars = max(1, int(box_w / max(1, (fs * 0.6))))
+                wrapped = "\n".join(textwrap.wrap(
+                    new_text, width=max(est_chars, 1),
+                    break_long_words=False, break_on_hyphens=False))
+
+            # measure on a generous tmp to avoid clipping issues
+            tmp_img = Image.new(
+                "RGBA", (max(64, box_w + 160), max(48, box_h + 160)), (255, 255, 255, 0))
+            td = ImageDraw.Draw(tmp_img)
+            try:
+                bbox = td.multiline_textbbox(
+                    (0, 0), wrapped, font=font, spacing=2)
+            except Exception:
+                bbox = (0, 0, 0, 0)
             tw = bbox[2] - bbox[0]
             th = bbox[3] - bbox[1]
-            if tw <= box_w - 4 and th <= box_h - 4:
-                good_font = font
-                good_wrapped = wrapped
+
+            # accept if reasonably fits into expanded box
+            if tw <= box_w * 1.05 and th <= box_h * 1.05:
+                final_font = font
+                final_wrapped = wrapped
                 text_w, text_h = tw, th
+                used_fs = fs
                 break
 
-        if good_font is None:
+        # shrink fallback if nothing matched
+        if final_font is None:
+            for fs in range(start_fs - 1, MIN_FONT_SIZE - 1, -1):
+                font = load_font(fs)
+                est_chars = max(1, int(box_w / max(1, (fs * 0.6))))
+                wrapped = "\n".join(textwrap.wrap(
+                    new_text, width=max(est_chars, 1),
+                    break_long_words=False, break_on_hyphens=False))
+                tmp_img = Image.new(
+                    "RGBA", (max(64, box_w + 160), max(48, box_h + 160)), (255, 255, 255, 0))
+                td = ImageDraw.Draw(tmp_img)
+                try:
+                    bbox = td.multiline_textbbox(
+                        (0, 0), wrapped, font=font, spacing=2)
+                except Exception:
+                    bbox = (0, 0, 0, 0)
+                tw = bbox[2] - bbox[0]
+                th = bbox[3] - bbox[1]
+                if tw <= box_w * 1.05 and th <= box_h * 1.05:
+                    final_font = font
+                    final_wrapped = wrapped
+                    text_w, text_h = tw, th
+                    used_fs = fs
+                    break
+
+        # final fallback: smallest readable and accept expansion
+        if final_font is None:
+            final_font = load_font(max(MIN_FONT_SIZE, min(start_fs, 20)))
+            final_wrapped = "\n".join(textwrap.wrap(
+                new_text, width=max(1, int(box_w / 8)),
+                break_long_words=False, break_on_hyphens=False))
+            tmp_img = Image.new(
+                "RGBA", (box_w + 160, box_h + 160), (255, 255, 255, 0))
+            td = ImageDraw.Draw(tmp_img)
             try:
-                good_font = ImageFont.truetype(font_path, 10)
+                bbox = td.multiline_textbbox(
+                    (0, 0), final_wrapped, font=final_font, spacing=2)
             except Exception:
-                good_font = ImageFont.load_default()
-            # fallback wrap
-            import textwrap
-            good_wrapped = "\n".join(textwrap.wrap(
-                new_text, width=max(1, int(box_w / 6))))
-            bbox = draw.multiline_textbbox(
-                (0, 0), good_wrapped, font=good_font, spacing=2)
+                bbox = (0, 0, 0, 0)
             text_w = bbox[2] - bbox[0]
             text_h = bbox[3] - bbox[1]
+            used_fs = int(final_font.size if hasattr(
+                final_font, "size") else start_fs)
 
-        # determine orientation: if box is tall vs wide -> treat as vertical
-        is_vertical = box_h > box_w * 1.4
+        # Try to expand placement rect if text bigger than original box (bounded)
+        expand_x = max(0, int((text_w - box_w) / 2))
+        expand_y = max(0, int((text_h - box_h) / 2))
+        pad_x = min(expand_x, int(w_img * 0.25))
+        pad_y = min(expand_y, int(h_img * 0.12))
 
-        if not is_vertical:
-            x_text = x1 + (box_w - text_w) / 2
-            y_text = y1 + (box_h - text_h) / 2
-            # Text color: try dark gray for natural Amazon look
-            draw.multiline_text((x_text, y_text), good_wrapped, font=good_font, fill=(
-                40, 40, 40), spacing=2, align="center")
+        place_x1 = max(0, x1 - pad_x)
+        place_y1 = max(0, y1 - pad_y)
+        place_x2 = min(w_img, x2 + pad_x)
+        place_y2 = min(h_img, y2 + pad_y)
+        place_w = max(1, place_x2 - place_x1)
+        place_h = max(1, place_y2 - place_y1)
+
+        # Sample background to pick text color & background
+        avg_rgb = sample_background_color(
+            img_pil, (place_x1, place_y1, place_x2, place_y2), pad=6)
+        text_color = choose_text_color(avg_rgb)
+
+        # Build temporary canvas sized to text but clamp to place size * 1.2
+        tmp_w = int(min(max(48, text_w + 24), place_w * 1.2))
+        tmp_h = int(min(max(32, text_h + 16), place_h * 1.2))
+        tmp_w = max(tmp_w, 32)
+        tmp_h = max(tmp_h, 24)
+
+        tmp = Image.new("RGBA", (tmp_w, tmp_h), (255, 255, 255, 0))
+        td = ImageDraw.Draw(tmp)
+
+        # compute spacing, padding scaled to font
+        spacing_px = max(
+            1, int(getattr(final_font, "size", MIN_FONT_SIZE) * 0.12))
+        padding_px = max(
+            4, int(getattr(final_font, "size", MIN_FONT_SIZE) * 0.28))
+
+        # center text on tmp (or left-align for checkbox-like small boxes)
+        left_align = (x1 < w_img * 0.35 and box_w < w_img * 0.25)
+        if left_align:
+            text_x = padding_px
         else:
-            # render rotated text onto a temporary image, then paste rotated into box center
-            tmp = Image.new("RGBA", (box_h, box_w),
-                            (255, 255, 255, 0))  # swapped dims
-            td = ImageDraw.Draw(tmp)
-            # choose font scaled down so the text fits in swapped area
-            # draw text centered horizontally in tmp
-            bbox_tmp = td.multiline_textbbox(
-                (0, 0), good_wrapped, font=good_font, spacing=2)
-            tw_tmp = bbox_tmp[2] - bbox_tmp[0]
-            th_tmp = bbox_tmp[3] - bbox_tmp[1]
-            tx = (tmp.width - tw_tmp) / 2
-            ty = (tmp.height - th_tmp) / 2
-            td.multiline_text((tx, ty), good_wrapped, font=good_font, fill=(
-                40, 40, 40), spacing=2, align="center")
-            # rotate back to vertical orientation and paste
-            rotated = tmp.rotate(90, expand=True)
-            # compute paste position (center into rectangle)
-            rx = x1 + (box_w - rotated.width) / 2
-            ry = y1 + (box_h - rotated.height) / 2
-            out.alpha_composite(rotated, dest=(int(rx), int(ry)))
+            text_x = max(padding_px, int((tmp_w - text_w) / 2))
+        text_y = max(padding_px, int((tmp_h - text_h) / 2))
+
+        # compute exact inner bbox and draw a semi-opaque background using avg_rgb
+        try:
+            inner_bb = td.multiline_textbbox(
+                (text_x, text_y), final_wrapped, font=final_font, spacing=spacing_px)
+            bx0, by0, bx1, by1 = inner_bb
+        except Exception:
+            bx0, by0, bx1, by1 = text_x - 2, text_y - \
+                2, text_x + text_w + 2, text_y + text_h + 2
+
+        bx0 = max(0, bx0 - 4)
+        by0 = max(0, by0 - 3)
+        bx1 = min(tmp_w, bx1 + 4)
+        by1 = min(tmp_h, by1 + 3)
+
+        # choose alpha so text remains legible
+        alpha_bg = 200 if text_color == (255, 255, 255) else 220
+        bg_rgba = (avg_rgb[0], avg_rgb[1], avg_rgb[2], alpha_bg)
+        td.rectangle([bx0, by0, bx1, by1], fill=bg_rgba)
+
+        # stroke width proportional to font
+        stroke_fill = (255, 255, 255) if text_color == (0, 0, 0) else (0, 0, 0)
+        stroke_width = max(0, int(max(1, used_fs * 0.06)))
+
+        # draw text (vertical/horizontal)
+        try:
+            td.multiline_text((text_x, text_y), final_wrapped, font=final_font, fill=text_color,
+                              spacing=spacing_px, stroke_width=stroke_width, stroke_fill=stroke_fill)
+        except TypeError:
+            td.multiline_text((text_x, text_y), final_wrapped, font=final_font, fill=text_color,
+                              spacing=spacing_px)
+
+        # Decide rotation angle but keep English near-horizontal
+        raw_angle = get_text_angle(poly)
+        if all(ord(ch) < 128 for ch in new_text):
+            angle = raw_angle if abs(raw_angle) <= 10 else 0.0
+        else:
+            angle = raw_angle if abs(raw_angle) <= 15 else 0.0
+
+        # Rotate and place centered in place rectangle, clamped to image
+        rotated = tmp.rotate(-angle, expand=True)
+        rx = place_x1 + (place_w - rotated.width) / 2
+        ry = place_y1 + (place_h - rotated.height) / 2
+        rx = max(0, min(w_img - rotated.width, rx))
+        ry = max(0, min(h_img - rotated.height, ry))
+
+        out.alpha_composite(rotated, dest=(int(round(rx)), int(round(ry))))
+
+        # debug
+        print("DBG_BOX:", {"box_w": box_w, "box_h": box_h, "aspect": aspect,
+                           "want_vertical": want_vertical, "start_fs": start_fs,
+                           "chosen_fs": used_fs, "text_w": text_w, "text_h": text_h,
+                           "place_rect": (place_x1, place_y1, place_x2, place_y2)})
 
     return out.convert("RGB")
 
@@ -218,25 +523,25 @@ def overlay_translated_text(img_pil: Image.Image, annotations: List[Dict], font_
 # ---------------------------
 
 
-def inpaint_image_with_boxes(pil_img: Image.Image, annotations: List[Dict], expand_mask: int = 8, prefer_lama: bool = True):
+def inpaint_image_with_boxes(pil_img: Image.Image, annotations: List[Dict], expand_mask: int = 8,
+                             prefer_lama: bool = True, lama_device: str = "cpu") -> Image.Image:
     """
     Create mask from boxes, run LaMa inpaint if available and prefer_lama True,
-    otherwise fallback to OpenCV inpainting.
+    otherwise fallback to OpenCV inpaint.
     Returns: inpainted_pil
     """
     mask = create_mask_for_boxes(pil_img.size, annotations, expand=expand_mask)
 
-    # Try LaMa if requested and available
     if prefer_lama and LAMA_AVAILABLE:
         try:
-            out = inpaint_with_lama(pil_img, mask)
+            out = inpaint_with_lama(pil_img, mask, device=lama_device)
             return out
         except Exception as e:
             print("LaMa inpainting failed, falling back to OpenCV inpaint:", e)
 
-    # Fallback
     out = inpaint_with_opencv(pil_img, mask, method='telea')
     return out
+
 
 # ---------------------------
 # Convenience: full process and save
@@ -246,9 +551,10 @@ def inpaint_image_with_boxes(pil_img: Image.Image, annotations: List[Dict], expa
 def process_and_save(input_path: str,
                      annotations: List[Dict],
                      output_path: str,
-                     translated_texts: List[str] = None,
-                     font_path: str = "arial.ttf",
-                     prefer_lama: bool = True):
+                     translated_texts: Optional[List[str]] = None,
+                     font_path: Optional[str] = None,
+                     prefer_lama: bool = True,
+                     lama_device: str = "cpu"):
     """
     input_path -> loads image
     annotations -> list of boxes (same order as translated_texts), you can also include "new_text" per annotation
@@ -257,17 +563,13 @@ def process_and_save(input_path: str,
     """
     img = Image.open(input_path).convert("RGB")
 
-    # attach new_text into annotations if provided
     if translated_texts:
         for i, t in enumerate(translated_texts):
             if i < len(annotations):
                 annotations[i]["new_text"] = t
 
-    # 1) inpaint
     inpainted = inpaint_image_with_boxes(
-        img, annotations, expand_mask=8, prefer_lama=prefer_lama)
-
-    # 2) overlay text
+        img, annotations, expand_mask=8, prefer_lama=prefer_lama, lama_device=lama_device)
     final = overlay_translated_text(
         inpainted, annotations, font_path=font_path)
 
@@ -276,13 +578,11 @@ def process_and_save(input_path: str,
 
 
 # ---------------------------
-# Minimal example usage when run as script
+# minimal script usage
 # ---------------------------
 if __name__ == "__main__":
     import json
     import sys
-    # Example usage:
-    # python inpaint_and_overlay.py input.jpg annotations.json output.jpg
     if len(sys.argv) < 4:
         print("Usage: python inpaint_and_overlay.py input.jpg annotations.json output.jpg")
         sys.exit(1)
@@ -291,7 +591,6 @@ if __name__ == "__main__":
     out_p = sys.argv[3]
     with open(ann_p, "r", encoding="utf-8") as f:
         annotations = json.load(f)
-    # Optionally you can prepare translated list:
     translated = [ann.get("translated_text") or ann.get(
         "new_text") or "" for ann in annotations]
     process_and_save(input_p, annotations, out_p, translated_texts=translated)

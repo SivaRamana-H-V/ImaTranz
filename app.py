@@ -2,15 +2,12 @@ import streamlit as st
 import requests
 import json
 import re
-import textwrap
 import tempfile
 import zipfile
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
-import numpy as np
-from sklearn.cluster import KMeans
+from PIL import Image
 import concurrent.futures
 from google.cloud import vision
 from google.cloud import translate_v2 as translate
@@ -18,6 +15,7 @@ import logging
 import json
 from google.oauth2 import service_account
 from inpaint_and_overlay import inpaint_image_with_boxes, overlay_translated_text
+import html
 
 logging.basicConfig(level=logging.INFO)
 
@@ -133,89 +131,73 @@ def download_image(url, timeout=12):
 # ---------------------------
 # GCP Vision OCR: IMAGE LEVEL (CRITICAL FIX FOR COHERENCE)
 # ---------------------------
-def vision_ocr_blocks_texts(pil_img, min_conf=0.0):
+def vision_ocr_paragraphs(pil_img):
     """
-    Perform OCR using Google Cloud Vision API.
-    Returns list of dictionaries with 'text' and 'bounding_box'.
+    Uses Google Vision API but returns PARAGRAPH-LEVEL boxes only.
+    Much cleaner for translation overlays.
     """
-
     buf = BytesIO()
     pil_img.save(buf, format="PNG")
     image = vision.Image(content=buf.getvalue())
 
-    response = vision_client.text_detection(image=image)
+    response = vision_client.document_text_detection(image=image)
     if response.error.message:
-        raise Exception(f"Vision API error: {response.error.message}")
+        raise Exception(response.error.message)
 
-    annotations = response.text_annotations
-    if not annotations:
-        logging.warning("No text annotations detected.")
-        return []
+    results = []
 
-    texts_data = []
-    # The first item is the full text; others are word-level boxes
-    for text_obj in annotations[1:]:
-        vertices = text_obj.bounding_poly.vertices
-        bbox = []
-        for v in vertices:
-            bbox.append({
-                "x": getattr(v, "x", 0),
-                "y": getattr(v, "y", 0)
-            })
-        texts_data.append({
-            "text": text_obj.description,
-            "bounding_box": bbox
-        })
+    annotation = response.full_text_annotation
 
-    # Optionally save output to a local JSON file
-    try:
-        with open("detected_texts.json", "w", encoding="utf-8") as f:
-            json.dump(texts_data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logging.warning(f"Failed to write detected_texts.json: {e}")
+    for page in annotation.pages:
+        for block in page.blocks:
+            for para in block.paragraphs:
 
-    logging.info(f"✅ Detected {len(texts_data)} text boxes.")
-    return texts_data
+                # collect paragraph text
+                words = []
+                for word in para.words:
+                    symbols = "".join([s.text for s in word.symbols])
+                    words.append(symbols)
+                text = " ".join(words).strip()
+
+                if not text:
+                    continue
+
+                # paragraph bounding box
+                bbox = para.bounding_box.vertices
+                vertices = [{"x": v.x, "y": v.y} for v in bbox]
+
+                results.append({
+                    "text": text,
+                    "bounding_box": vertices
+                })
+
+    return results
+
 
 # ---------------------------
 # Translate via GCP (v2 Client)
 # ---------------------------
-
-
 def gcloud_translate_texts(text_list, target="en"):
-    """
-    Robust translation wrapper using translate_client.
-    Returns a list of translations (same length as text_list).
-    Falls back to original texts on error.
-    """
     if not text_list:
         return []
     try:
-        # translate_client.translate accepts list and returns list of dicts
         resp = translate_client.translate(text_list, target_language=target)
+        out = []
         if isinstance(resp, dict):
-            # single response
-            return [resp.get("translatedText", "")]
-        elif isinstance(resp, list):
-            out = []
-            for item in resp:
-                out.append(item.get("translatedText", "")
-                           if isinstance(item, dict) else str(item))
-            # ensure same length
-            if len(out) != len(text_list):
-                # fallback: map items best-effort
-                logging.warning(
-                    "Translate API returned unexpected length, falling back partial results.")
-                # pad or trim
-                out = (out + text_list)[:len(text_list)]
-            return out
+            out = [html.unescape(resp.get("translatedText", ""))]
         else:
-            logging.warning(
-                "Unexpected translate response type, returning originals.")
-            return text_list
+            for it in resp:
+                # Some responses may be dicts or strings
+                if isinstance(it, dict):
+                    out.append(html.unescape(it.get("translatedText", "")))
+                else:
+                    out.append(html.unescape(str(it)))
+        # Ensure length
+        if len(out) != len(text_list):
+            out = (out + text_list)[:len(text_list)]
+        return out
     except Exception as e:
         logging.error(f"GCP Translate error: {e}")
-        # Fallback to original text to ensure pipeline continues
         return text_list
 
 
@@ -230,27 +212,19 @@ def upscale_image(pil_img, scale_factor=2):
 # ---------------------------
 
 
-def translate_text(ocr_results):
+def translate_text(ocr_blocks):
     """
-    Enhanced version:
-    - Adaptive contrast-based color scheme
-    - Dynamic transparency
-    - Smart centering and readable overlays
+    Translate a list of blocks (each block is dict with 'text','bounding_box').
+    Returns the same list with 'new_text' added.
     """
-    translated_annotations = ocr_results.copy()  # ✅ initialize as a list
+    if not ocr_blocks:
+        return []
 
-    for item in ocr_results:
-        original_text = item['text']
-
-        if original_text.count('\n') > 1 and len(original_text) > 20:
-            continue
-
-        # Translate text
-        translated_text = gcloud_translate_texts(
-            [original_text], target="en")[0]
-        item['new_text'] = translated_text
-
-    return translated_annotations  # ✅ return list, not single string
+    texts = [b["text"] for b in ocr_blocks]
+    translations = gcloud_translate_texts(texts, target="en")
+    for b, tr in zip(ocr_blocks, translations):
+        b["new_text"] = tr
+    return ocr_blocks
 
 
 def get_box_coords(item):
@@ -263,114 +237,112 @@ def get_box_coords(item):
     return x_min, y_min, x_max, y_max
 
 
-def merge_close_boxes(data, distance_threshold, y_diff_threshold):
+def merge_vision_boxes(text_items, min_height=15, y_merge_thresh=25):
     """
-    Merges adjacent bounding boxes and their text if they are close enough
-    horizontally and on the same vertical line.
+    Merge small Vision word-boxes into readable horizontal line blocks.
+    This is CRITICAL for good translation placement.
+
+    Steps:
+        1. Remove boxes that are too thin (Vision garbage)
+        2. Sort items by Y position
+        3. Group into horizontal lines
+        4. Merge words into a single bounding box per line
     """
-    if not data:
+    cleaned = []
+
+    # 1) Remove tiny broken boxes
+    for t in text_items:
+        poly = t["bounding_box"]
+        xs = [p["x"] for p in poly]
+        ys = [p["y"] for p in poly]
+        h = max(ys) - min(ys)
+        if h >= min_height:
+            cleaned.append(t)
+
+    if not cleaned:
         return []
 
-    # Sort data primarily by y_min (top line), then by x_min (left to right)
-    # This is crucial for processing text in reading order
-    sorted_data = sorted(data, key=lambda item: (
-        get_box_coords(item)[1], get_box_coords(item)[0]))
+    # 2) Sort by Y first
+    cleaned.sort(key=lambda a: min(p["y"] for p in a["bounding_box"]))
 
-    merged_data = []
+    merged = []
+    current_line = [cleaned[0]]
 
-    # Skip the massive, first bounding box that contains all the text
-    # You can adjust this condition based on your exact data structure
-    current_data_index = 0
-    if len(sorted_data[0]["text"].split('\n')) > 1:
-        merged_data.append(sorted_data[0])
-        current_data_index = 1
+    def in_same_line(a, b):
+        ay1 = min(p["y"] for p in a["bounding_box"])
+        by1 = min(p["y"] for p in b["bounding_box"])
+        return abs(ay1 - by1) < y_merge_thresh
 
-    i = current_data_index
-    while i < len(sorted_data):
-        current_item = sorted_data[i]
-        c_xmin, c_ymin, c_xmax, c_ymax = get_box_coords(current_item)
+    for i in range(1, len(cleaned)):
+        if in_same_line(current_line[-1], cleaned[i]):
+            current_line.append(cleaned[i])
+        else:
+            merged.append(current_line)
+            current_line = [cleaned[i]]
 
-        # Start a new merged entry with the current item
-        merged_text = current_item["text"]
-        new_xmin, new_ymin, new_xmax, new_ymax = c_xmin, c_ymin, c_xmax, c_ymax
-        j = i + 1
+    merged.append(current_line)
 
-        while j < len(sorted_data):
-            next_item = sorted_data[j]
-            n_xmin, n_ymin, n_xmax, n_ymax = get_box_coords(next_item)
+    # 3) Build merged blocks
+    final = []
+    for line in merged:
+        line = sorted(line, key=lambda a: min(
+            p["x"] for p in a["bounding_box"]))
+        text_combined = " ".join(item["text"] for item in line)
 
-            # Check for horizontal proximity (c_xmax to n_xmin)
-            horizontal_gap = n_xmin - c_xmax
+        xs = []
+        ys = []
+        for item in line:
+            for p in item["bounding_box"]:
+                xs.append(p["x"])
+                ys.append(p["y"])
 
-            # Check for vertical alignment (assuming they are roughly on the same line)
-            # Use overlap or small difference in y_min/y_max
-            y_diff = abs(c_ymin - n_ymin)
+        x1, x2 = min(xs), max(xs)
+        y1, y2 = min(ys), max(ys)
 
-            if horizontal_gap <= distance_threshold and y_diff <= y_diff_threshold:
-                # Merge the text
-                merged_text += next_item["text"]
-
-                # Expand the bounding box
-                new_xmin = min(new_xmin, n_xmin)
-                new_ymin = min(new_ymin, n_ymin)
-                new_xmax = max(new_xmax, n_xmax)
-                new_ymax = max(new_ymax, n_ymax)
-
-                # Move to the next item to check for further merging
-                j += 1
-            else:
-                # Items are too far apart (or on a new line), stop merging
-                break
-
-        # Finalize the merged entry (create a simplified, combined bounding box)
-        merged_data.append({
-            "text": merged_text,
+        final.append({
+            "text": text_combined.strip(),
             "bounding_box": [
-                {"x": new_xmin, "y": new_ymin},
-                {"x": new_xmax, "y": new_ymin},
-                {"x": new_xmax, "y": new_ymax},
-                {"x": new_xmin, "y": new_ymax}
+                {"x": x1, "y": y1},
+                {"x": x2, "y": y1},
+                {"x": x2, "y": y2},
+                {"x": x1, "y": y2},
             ]
         })
 
-        # Move the main loop index past all merged items
-        i = j
-
-    return merged_data
-
+    return final
 
 # ---------------------------
 # Full pipeline (per-image)
 # ---------------------------
 
+
 def process_image_gcp(pil_img):
     """
-    OCR → Translate → Draw boxes
-    (no text removal)
+    Full per-image pipeline:
+      - Vision OCR -> block extraction
+      - Merge close blocks into readable lines
+      - Translate merged blocks
+      - Inpaint + overlay -> cleaned, translated final
+    Returns: (cleaned_pil, final_translated_pil, meta)
     """
     try:
-        text_data = vision_ocr_blocks_texts(pil_img)
+        # 1) OCR (block-level)
+        blocks = vision_ocr_paragraphs(pil_img)
     except Exception as e:
         return pil_img, pil_img, {"error": str(e)}
 
-    if not text_data:
+    if not blocks:
         return pil_img, pil_img, {"detected": 0}
 
-    bounding_data = []
-
-    with open('detected_texts.json', 'r', encoding='utf-8') as f:
-        bounding_data = json.load(f)
-
-    merged_data_final = merge_close_boxes(
-        bounding_data, DISTANCE_THRESHOLD, Y_DIFF_THRESHOLD)
-
-    translated_annotations = translate_text(merged_data_final)
-    # overlay neatly
-    cleaned, translated_image, meta = process_inpaint_pipeline(
-        pil_img.copy(), translated_annotations
-    )
-
-    return cleaned, translated_image, meta
+    # 2) Merge nearby boxes into lines/blocks (scale-aware)
+    # merged = merge_vision_boxes(blocks)
+    # 3) Translate
+    translated_blocks = translate_text(blocks)
+    # 4) Inpaint & overlay
+    cleaned, final_img, meta = process_inpaint_pipeline(
+        pil_img.copy(), translated_blocks)
+    meta["detected"] = len(translated_blocks)
+    return cleaned, final_img, meta
 
 
 def process_inpaint_pipeline(img_pil, annotations):
