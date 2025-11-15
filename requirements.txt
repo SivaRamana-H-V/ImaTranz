@@ -19,7 +19,7 @@ google-auth-oauthlib
 streamlit
 
 # Lama Cleaner (optional)
-lama-cleaner
+lama-cleaner==1.2.0
 
 # Others
 typing_extensions
