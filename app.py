@@ -29,7 +29,6 @@ logging.basicConfig(level=logging.INFO)
 st.set_page_config(layout="wide", page_title="Amazon Image Translator (GCP)")
 st.title("Amazon Product Image Translator — GCP Vision + Translate")
 
-FONT_PATH = "arial.ttf"  # CHANGE THIS to a font file available on your deploy system
 MAX_IMAGES = 3
 BOX_EXPANSION_INPAINT = 12  # Increased for cleaner text removal
 HEADERS = {
@@ -40,9 +39,11 @@ HEADERS = {
 TEXT_COLOR = 'white'
 FILL_COLOR = (0, 0, 0, 255)
 INITIAL_FONT_SIZE = 50
-FONT_PATH = "arial.ttf"
+FONT_PATH = "assets/fonts/POPPINS-MEDIUM.TTF"
 DISTANCE_THRESHOLD = 400
 Y_DIFF_THRESHOLD = 2
+MIN_FONT_SIZE = 12
+
 try:
     # 1️⃣ Streamlit Cloud method (secrets.toml)
     gcp_credentials = service_account.Credentials.from_service_account_info(
@@ -80,7 +81,6 @@ except Exception as e:
             "Check Streamlit secrets or Render environment variables."
         )
         st.stop()
-MIN_FONT_SIZE = 12
 
 # ---------------------------
 # Utilities
@@ -298,8 +298,6 @@ def overlay_translated_text(img_pil: Image.Image, annotations: List[Dict], font_
     adaptive text color/background blending.
     Returns a PIL RGB image.
     """
-    # safety minimum font size for readability (project requirement)
-    MIN_FONT_SIZE = 12
 
     out = img_pil.convert("RGBA")
     w_img, h_img = out.size
@@ -314,8 +312,8 @@ def overlay_translated_text(img_pil: Image.Image, annotations: List[Dict], font_
             continue
 
         x1, y1, x2, y2 = poly_to_rect_coords(poly)
-        box_w = max(2, x2 - x1)
-        box_h = max(2, y2 - y1)
+        box_w = max(3, x2 - x1)
+        box_h = max(3, y2 - y1)
 
         new_text = (ann.get("new_text") or ann.get(
             "translated_text") or ann.get("text") or "").strip()
@@ -471,6 +469,12 @@ def overlay_translated_text(img_pil: Image.Image, annotations: List[Dict], font_
         tmp_w = max(tmp_w, 32)
         tmp_h = max(tmp_h, 24)
 
+        # --- FIX: Ensure enough height so descenders never get clipped ---
+        min_h = int(final_font.size * 2.2)  # ensures bottom letters never cut
+        tmp_h = max(tmp_h, min_h)
+        min_w = int(final_font.size * 1.6)
+        tmp_w = max(tmp_w, min_w)
+
         tmp = Image.new("RGBA", (tmp_w, tmp_h), (255, 255, 255, 0))
         td = ImageDraw.Draw(tmp)
 
@@ -486,7 +490,7 @@ def overlay_translated_text(img_pil: Image.Image, annotations: List[Dict], font_
             text_x = padding_px
         else:
             text_x = max(padding_px, int((tmp_w - text_w) / 2))
-        text_y = max(padding_px, int((tmp_h - text_h) / 2))
+        text_y = padding_px
 
         # compute exact inner bbox and draw a semi-opaque background using avg_rgb
         try:
@@ -768,7 +772,7 @@ def process_inpaint_pipeline(img_pil, annotations):
 
     # 2) Overlay translated text
     final = overlay_translated_text(
-        cleaned, annotations, font_path="arial.ttf")
+        cleaned, annotations, font_path=FONT_PATH)
 
     # Metadata for UI
     meta = {
