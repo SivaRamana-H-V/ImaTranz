@@ -4,7 +4,7 @@ import math
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 import streamlit as st
 import requests
 import json
@@ -218,47 +218,6 @@ def get_text_angle(poly_pts: List[Tuple[float, float]]) -> float:
 
 
 # ---------------------------
-# Choose font by script hint (simple)
-# ---------------------------
-
-
-def choose_font_for_text(sample_text: str, fallback: Optional[str] = None) -> Optional[str]:
-    """
-    Very simple heuristic to choose a font path for a given sample_text.
-    You should provide paths to fonts available on your system.
-    Returns path to a font file or None to use PIL default.
-    """
-    FONT_MAP = {
-        "cjk": ["NotoSansCJK-Regular.ttc", "NotoSansCJKsc-Regular.otf"],
-        "devanagari": ["NotoSansDevanagari-Regular.ttf"],
-        "arabic": ["NotoNaskhArabic-Regular.ttf", "NotoSansArabic.ttf"],
-        "thai": ["NotoSansThai-Regular.ttf"],
-        "default": [fallback or "arial.ttf"]
-    }
-
-    candidates = FONT_MAP.get("default")
-    for ch in sample_text:
-        code = ord(ch)
-        if 0x4E00 <= code <= 0x9FFF:
-            candidates = FONT_MAP.get("cjk")
-            break
-        if 0x0900 <= code <= 0x097F:
-            candidates = FONT_MAP.get("devanagari")
-            break
-        if 0x0600 <= code <= 0x06FF:
-            candidates = FONT_MAP.get("arabic")
-            break
-        if 0x0E00 <= code <= 0x0E7F:
-            candidates = FONT_MAP.get("thai")
-            break
-
-    for p in candidates:
-        if p and os.path.exists(p):
-            return p
-    return None
-
-
-# ---------------------------
 # Helpers for adaptive color & sampling
 # ---------------------------
 
@@ -287,18 +246,45 @@ def choose_text_color(rgb: Tuple[int, int, int]) -> Tuple[int, int, int]:
     return (0, 0, 0) if lum > 160 else (255, 255, 255)
 
 
+def draw_rotated_text_block(base_img, text, font, angle, box_rect):
+    """
+    Draw a FULL WORD rotated by `angle` inside bounding box.
+    text = word to draw
+    font = PIL font
+    angle = 0, 90, 180, 270
+    box_rect = (x1, y1, x2, y2)
+    """
+
+    x1, y1, x2, y2 = box_rect
+    box_w = x2 - x1
+    box_h = y2 - y1
+
+    # --- 1) Render text on transparent canvas ---
+    temp = Image.new("RGBA", (2000, 500), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(temp)
+    draw.text((0, 0), text, font=font, fill="black")
+
+    # --- 2) Crop tight ---
+    bbox = temp.getbbox()
+    text_img = temp.crop(bbox)
+
+    # --- 3) Rotate whole word ---
+    rotated = text_img.rotate(angle, expand=True)
+
+    # --- 4) Center it inside bounding box ---
+    rx = x1 + (box_w - rotated.width) / 2
+    ry = y1 + (box_h - rotated.height) / 2
+
+    # --- 5) Paste ---
+    base_img.alpha_composite(rotated, dest=(int(rx), int(ry)))
+
+    return base_img
+
+
 # ---------------------------
 # Overlay translated text nicely (optimized)
 # ---------------------------
-
-def overlay_translated_text(img_pil: Image.Image, annotations: List[Dict], font_path: Optional[str] = None):
-    """
-    Overlay translated/new_text contained in annotations into the bounding boxes.
-    Adaptive font size, expand bounding area if needed, vertical stacking for tall boxes,
-    adaptive text color/background blending.
-    Returns a PIL RGB image.
-    """
-
+def overlay_translated_text(img_pil: Image.Image, annotations: List[Dict], font_path=None):
     out = img_pil.convert("RGBA")
     w_img, h_img = out.size
 
@@ -320,224 +306,116 @@ def overlay_translated_text(img_pil: Image.Image, annotations: List[Dict], font_
         if not new_text:
             continue
 
-        # choose font candidate
-        chosen_font = font_path
-        if font_path is None:
-            maybe = choose_font_for_text(new_text)
-            if maybe:
-                chosen_font = maybe
-
-        # detect vertical (tall narrow)
         aspect = float(box_h) / max(1.0, box_w)
-        want_vertical = aspect >= 2.5  # stricter threshold for true vertical labels
+        want_vertical = aspect >= 2.5
 
-        # Heuristics for font sizing:
-        start_fs = max(MIN_FONT_SIZE, int(box_h * 0.36))
-        start_fs = min(start_fs, 72)
-        max_try_fs = min(72, int(min(w_img, h_img) * 0.2))
+        # -------------------------------
+        # FONT SELECTION HELPER
+        # -------------------------------
+        def pick_font_for_size(w_limit, h_limit, text, vertical=False):
+            for fs in range(72, MIN_FONT_SIZE - 1, -1):
+                f = ImageFont.truetype(font_path, fs)
+                tmp = Image.new("RGBA", (2000, 800), (0, 0, 0, 0))
+                d = ImageDraw.Draw(tmp)
 
-        if want_vertical:
-            # base on box width for vertical labels
-            start_fs = max(MIN_FONT_SIZE, int(box_w * 0.7))
-
-        final_font = None
-        final_wrapped = new_text
-        text_w = text_h = 0
-        used_fs = start_fs
-
-        def load_font(fs):
-            try:
-                return ImageFont.truetype(chosen_font, fs) if chosen_font else ImageFont.load_default()
-            except Exception:
-                return ImageFont.load_default()
-
-        # Candidates: try larger sizes first to prefer big readable labels
-        if len(new_text.split()) <= 3 and not want_vertical:
-            # short labels - allow larger tries
-            high_start = min(start_fs + 10, max_try_fs)
-        else:
-            high_start = min(start_fs + 6, max_try_fs)
-        fs_candidates = list(range(high_start, MIN_FONT_SIZE - 1, -1))
-
-        # ensure wrapped defined
-        wrapped = new_text
-
-        for fs in fs_candidates:
-            font = load_font(fs)
-            # wrapping strategy
-            if want_vertical:
-                words = [w for w in new_text.split() if w.strip()]
-                if len(words) <= 3:
-                    # per-char vertical stack (remove spaces)
-                    wrapped = "\n".join(list(new_text.replace(" ", "")))
+                if vertical:
+                    bbox = d.textbbox((0, 0), text, font=f)
                 else:
-                    est_chars = max(1, int(box_w / max(1, (fs * 0.6))))
                     wrapped = "\n".join(textwrap.wrap(
-                        new_text, width=max(est_chars, 1),
-                        break_long_words=False, break_on_hyphens=False))
-            else:
-                est_chars = max(1, int(box_w / max(1, (fs * 0.6))))
-                wrapped = "\n".join(textwrap.wrap(
-                    new_text, width=max(est_chars, 1),
-                    break_long_words=False, break_on_hyphens=False))
+                        text, width=max(1, int(w_limit / max(1, (fs * 0.6)))),
+                        break_on_hyphens=False, break_long_words=False
+                    ))
+                    bbox = d.multiline_textbbox((0, 0), wrapped, font=f)
 
-            # measure on a generous tmp to avoid clipping issues
-            tmp_img = Image.new(
-                "RGBA", (max(64, box_w + 160), max(48, box_h + 160)), (255, 255, 255, 0))
-            td = ImageDraw.Draw(tmp_img)
-            try:
-                bbox = td.multiline_textbbox(
-                    (0, 0), wrapped, font=font, spacing=2)
-            except Exception:
-                bbox = (0, 0, 0, 0)
-            tw = bbox[2] - bbox[0]
-            th = bbox[3] - bbox[1]
+                tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
 
-            # accept if reasonably fits into expanded box
-            if tw <= box_w * 1.05 and th <= box_h * 1.05:
-                final_font = font
-                final_wrapped = wrapped
-                text_w, text_h = tw, th
-                used_fs = fs
-                break
+                if tw <= w_limit * 1.05 and th <= h_limit * 1.05:
+                    return f, (tw, th), wrapped if not vertical else text
 
-        # shrink fallback if nothing matched
-        if final_font is None:
-            for fs in range(start_fs - 1, MIN_FONT_SIZE - 1, -1):
-                font = load_font(fs)
-                est_chars = max(1, int(box_w / max(1, (fs * 0.6))))
-                wrapped = "\n".join(textwrap.wrap(
-                    new_text, width=max(est_chars, 1),
-                    break_long_words=False, break_on_hyphens=False))
-                tmp_img = Image.new(
-                    "RGBA", (max(64, box_w + 160), max(48, box_h + 160)), (255, 255, 255, 0))
-                td = ImageDraw.Draw(tmp_img)
-                try:
-                    bbox = td.multiline_textbbox(
-                        (0, 0), wrapped, font=font, spacing=2)
-                except Exception:
-                    bbox = (0, 0, 0, 0)
-                tw = bbox[2] - bbox[0]
-                th = bbox[3] - bbox[1]
-                if tw <= box_w * 1.05 and th <= box_h * 1.05:
-                    final_font = font
-                    final_wrapped = wrapped
-                    text_w, text_h = tw, th
-                    used_fs = fs
-                    break
+            # fallback
+            f = ImageFont.truetype(font_path, MIN_FONT_SIZE)
+            return f, (w_limit, h_limit), text
 
-        # final fallback: smallest readable and accept expansion
-        if final_font is None:
-            final_font = load_font(max(MIN_FONT_SIZE, min(start_fs, 20)))
-            final_wrapped = "\n".join(textwrap.wrap(
-                new_text, width=max(1, int(box_w / 8)),
-                break_long_words=False, break_on_hyphens=False))
-            tmp_img = Image.new(
-                "RGBA", (box_w + 160, box_h + 160), (255, 255, 255, 0))
-            td = ImageDraw.Draw(tmp_img)
-            try:
-                bbox = td.multiline_textbbox(
-                    (0, 0), final_wrapped, font=final_font, spacing=2)
-            except Exception:
-                bbox = (0, 0, 0, 0)
-            text_w = bbox[2] - bbox[0]
-            text_h = bbox[3] - bbox[1]
-            used_fs = int(final_font.size if hasattr(
-                final_font, "size") else start_fs)
+        # ============================================================
+        # CASE 1 — STRICT VERTICAL MODE
+        # ============================================================
+        if want_vertical:
+            font, (tw, th), _ = pick_font_for_size(
+                box_w, box_h, new_text, vertical=True)
 
-        # Try to expand placement rect if text bigger than original box (bounded)
-        expand_x = max(0, int((text_w - box_w) / 2))
-        expand_y = max(0, int((text_h - box_h) / 2))
-        pad_x = min(expand_x, int(w_img * 0.25))
-        pad_y = min(expand_y, int(h_img * 0.12))
+            # TTB or BTT
+            angle = -90
+            if get_text_angle(poly) < -30:
+                angle = 270
 
-        place_x1 = max(0, x1 - pad_x)
-        place_y1 = max(0, y1 - pad_y)
-        place_x2 = min(w_img, x2 + pad_x)
-        place_y2 = min(h_img, y2 + pad_y)
-        place_w = max(1, place_x2 - place_x1)
-        place_h = max(1, place_y2 - place_y1)
+            out = draw_rotated_text_block(
+                out, new_text, font, angle, (x1, y1, x2, y2)
+            )
 
-        # Sample background to pick text color & background
-        avg_rgb = sample_background_color(
-            img_pil, (place_x1, place_y1, place_x2, place_y2), pad=6)
+            continue   # ********** CRITICAL — DO NOT PROCESS HORIZONTAL **********
+
+        # ============================================================
+        # CASE 2 — NORMAL HORIZONTAL MODE
+        # ============================================================
+
+        font, (tw, th), wrapped = pick_font_for_size(
+            box_w, box_h, new_text, vertical=False)
+
+        # expand area if needed
+        needed_w = tw + int(font.size * 1.8)
+        needed_h = th + int(font.size * 1.6)
+
+        expand_x = max(0, int((needed_w - box_w) / 2))
+        expand_y = max(0, int((needed_h - box_h) / 2))
+
+        # clamp expansion inside image
+        expand_x = min(expand_x, int(w_img * 0.30))
+        expand_y = min(expand_y, int(h_img * 0.20))
+
+        px1 = max(0, x1 - expand_x)
+        py1 = max(0, y1 - expand_y)
+        px2 = min(w_img, x2 + expand_x)
+        py2 = min(h_img, y2 + expand_y)
+
+        place_w = px2 - px1
+        place_h = py2 - py1
+
+        avg_rgb = sample_background_color(img_pil, (px1, py1, px2, py2))
         text_color = choose_text_color(avg_rgb)
+        stroke = (255, 255, 255) if text_color == (0, 0, 0) else (0, 0, 0)
 
-        # Build temporary canvas sized to text but clamp to place size * 1.2
-        tmp_w = int(min(max(48, text_w + 24), place_w * 1.2))
-        tmp_h = int(min(max(32, text_h + 16), place_h * 1.2))
-        tmp_w = max(tmp_w, 32)
-        tmp_h = max(tmp_h, 24)
+        # padded canvas
+        tmp = Image.new("RGBA", (place_w, place_h), (255, 255, 255, 0))
+        d = ImageDraw.Draw(tmp)
 
-        # --- FIX: Ensure enough height so descenders never get clipped ---
-        min_h = int(final_font.size * 2.2)  # ensures bottom letters never cut
-        tmp_h = max(tmp_h, min_h)
-        min_w = int(final_font.size * 1.6)
-        tmp_w = max(tmp_w, min_w)
+        padding = max(4, int(font.size * 0.3))
+        spacing = max(1, int(font.size * 0.12))
 
-        tmp = Image.new("RGBA", (tmp_w, tmp_h), (255, 255, 255, 0))
-        td = ImageDraw.Draw(tmp)
+        # measure
+        bb = d.multiline_textbbox(
+            (padding, padding), wrapped, font=font, spacing=spacing)
+        bx0, by0, bx1, by1 = bb
+        d.rectangle([bx0-3, by0-3, bx1+3, by1+3],
+                    fill=(avg_rgb[0], avg_rgb[1], avg_rgb[2], 210))
 
-        # compute spacing, padding scaled to font
-        spacing_px = max(
-            1, int(getattr(final_font, "size", MIN_FONT_SIZE) * 0.12))
-        padding_px = max(
-            4, int(getattr(final_font, "size", MIN_FONT_SIZE) * 0.28))
+        d.multiline_text(
+            (padding, padding), wrapped,
+            font=font, fill=text_color,
+            spacing=spacing,
+            stroke_width=max(1, int(font.size * 0.06)),
+            stroke_fill=stroke
+        )
 
-        # center text on tmp (or left-align for checkbox-like small boxes)
-        left_align = (x1 < w_img * 0.35 and box_w < w_img * 0.25)
-        if left_align:
-            text_x = padding_px
-        else:
-            text_x = max(padding_px, int((tmp_w - text_w) / 2))
-        text_y = padding_px
+        angle = get_text_angle(poly)
+        if abs(angle) > 15:
+            angle = 0
 
-        # compute exact inner bbox and draw a semi-opaque background using avg_rgb
-        try:
-            inner_bb = td.multiline_textbbox(
-                (text_x, text_y), final_wrapped, font=final_font, spacing=spacing_px)
-            bx0, by0, bx1, by1 = inner_bb
-        except Exception:
-            bx0, by0, bx1, by1 = text_x - 2, text_y - \
-                2, text_x + text_w + 2, text_y + text_h + 2
-
-        bx0 = max(0, bx0 - 4)
-        by0 = max(0, by0 - 3)
-        bx1 = min(tmp_w, bx1 + 4)
-        by1 = min(tmp_h, by1 + 3)
-
-        # choose alpha so text remains legible
-        alpha_bg = 200 if text_color == (255, 255, 255) else 220
-        bg_rgba = (avg_rgb[0], avg_rgb[1], avg_rgb[2], alpha_bg)
-        td.rectangle([bx0, by0, bx1, by1], fill=bg_rgba)
-
-        # stroke width proportional to font
-        stroke_fill = (255, 255, 255) if text_color == (0, 0, 0) else (0, 0, 0)
-        stroke_width = max(0, int(max(1, used_fs * 0.06)))
-
-        # draw text (vertical/horizontal)
-        try:
-            td.multiline_text((text_x, text_y), final_wrapped, font=final_font, fill=text_color,
-                              spacing=spacing_px, stroke_width=stroke_width, stroke_fill=stroke_fill)
-        except TypeError:
-            td.multiline_text((text_x, text_y), final_wrapped, font=final_font, fill=text_color,
-                              spacing=spacing_px)
-
-        # Decide rotation angle but keep English near-horizontal
-        raw_angle = get_text_angle(poly)
-        if all(ord(ch) < 128 for ch in new_text):
-            angle = raw_angle if abs(raw_angle) <= 10 else 0.0
-        else:
-            angle = raw_angle if abs(raw_angle) <= 15 else 0.0
-
-        # Rotate and place centered in place rectangle, clamped to image
         rotated = tmp.rotate(-angle, expand=True)
-        rx = place_x1 + (place_w - rotated.width) / 2
-        ry = place_y1 + (place_h - rotated.height) / 2
-        rx = max(0, min(w_img - rotated.width, rx))
-        ry = max(0, min(h_img - rotated.height, ry))
 
-        out.alpha_composite(rotated, dest=(int(round(rx)), int(round(ry))))
+        rx = px1 + (place_w - rotated.width) / 2
+        ry = py1 + (place_h - rotated.height) / 2
+
+        out.alpha_composite(rotated, dest=(int(rx), int(ry)))
 
     return out.convert("RGB")
 
