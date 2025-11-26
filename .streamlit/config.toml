@@ -2,18 +2,6 @@
 headless = true
 address = "0.0.0.0"
 port = 10000
-maxUploadSize = 50
 
 [browser]
-serverAddress = true
-serverPort = 10000
 gatherUsageStats = false
-
-[client]
-showErrorDetails = false
-
-[runner]
-magicEnabled = false
-
-[logger]
-level = "error"
