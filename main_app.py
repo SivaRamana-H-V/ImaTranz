@@ -14,17 +14,23 @@ def main():
     setup_page_config()
     st.title("Amazon Product Image Translator — GCP Vision + Translate")
 
-    # Initialize session state
+    # Initialize session state with proper error handling
     if "results" not in st.session_state:
         st.session_state.results = []
-    if "processor" not in st.session_state:
+
+    if "gcp_initialized" not in st.session_state:
+        st.session_state.gcp_initialized = False
         st.session_state.processor = ImageProcessor()
 
-        # Initialize GCP services with detailed feedback
+        # Initialize GCP services
         with st.spinner("🔐 Initializing GCP services..."):
             success = st.session_state.processor.initialize_services()
 
-        if not success:
+        if success:
+            st.session_state.gcp_initialized = True
+            st.success("✅ GCP services initialized successfully!")
+        else:
+            st.session_state.gcp_initialized = False
             st.error("""
             🔐 **GCP Services Not Available**
             
@@ -40,13 +46,14 @@ def main():
                - Download JSON key file
                - Copy entire JSON content into Render
             
-            3. **Required permissions:**
-               - Cloud Translation API User
-               - Vision AI User
-            
             The app will auto-redeploy once you add credentials!
             """)
             return
+
+    # Only show the main app if GCP is initialized
+    if not st.session_state.gcp_initialized:
+        st.warning("GCP services not initialized. Please refresh the page.")
+        return
 
     # UI Components
     st.markdown(
