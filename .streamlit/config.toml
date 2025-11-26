@@ -1,7 +1,14 @@
 [server]
-headless = true
+port = 8501
 address = "0.0.0.0"
-port = 10000
+headless = true
+enableCORS = false
+enableXsrfProtection = false
 
 [browser]
+serverAddress = "localhost"  # ← MUST be string, not boolean!
+serverPort = 8501
 gatherUsageStats = false
+
+[logger]
+level = "info"
