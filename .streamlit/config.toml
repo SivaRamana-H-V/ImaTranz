@@ -2,13 +2,6 @@
 headless = true
 address = "0.0.0.0"
 port = 10000
-enableCORS = true
-enableXsrfProtection = true
 
 [browser]
-serverAddress = true
-serverPort = 10000
 gatherUsageStats = false
-
-[logger]
-level = "info"
