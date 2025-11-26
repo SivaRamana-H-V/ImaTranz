@@ -15,45 +15,60 @@ class GCPAuth:
         self.translate_client = None
 
     def initialize_clients(self):
-        """Initialize GCP clients for Render deployment"""
+        """Initialize GCP clients with detailed error handling"""
         try:
-            # 1️⃣ Render Environment Variable (Primary)
+            # Method 1: Render Environment Variable
             if "GCP_SERVICE_ACCOUNT_JSON" in os.environ:
+                logging.info("Found GCP_SERVICE_ACCOUNT_JSON in environment")
                 creds_json = os.environ["GCP_SERVICE_ACCOUNT_JSON"]
-                creds_dict = json.loads(creds_json)
-                gcp_credentials = service_account.Credentials.from_service_account_info(
-                    creds_dict)
-                return self._create_clients(gcp_credentials, "Render environment variable")
+                try:
+                    creds_dict = json.loads(creds_json)
+                    gcp_credentials = service_account.Credentials.from_service_account_info(
+                        creds_dict)
+                    return self._create_clients(gcp_credentials, "Render environment variable")
+                except json.JSONDecodeError as e:
+                    logging.error(
+                        f"Invalid JSON in GCP_SERVICE_ACCOUNT_JSON: {e}")
+                    return False
 
-            # 2️⃣ Streamlit secrets fallback (for local development)
+            # Method 2: Streamlit Secrets (for local development)
             elif hasattr(st, 'secrets') and "gcp_service_account" in st.secrets:
+                logging.info("Found gcp_service_account in Streamlit secrets")
                 gcp_credentials = service_account.Credentials.from_service_account_info(
                     st.secrets["gcp_service_account"]
                 )
                 return self._create_clients(gcp_credentials, "Streamlit secrets")
 
             else:
+                logging.error(
+                    "No GCP credentials found in environment variables or secrets")
                 st.error("""
-                🔐 GCP Credentials Required!
+                🔐 **GCP Credentials Not Found**
                 
-                Please set up your Google Cloud service account:
-                1. Go to Google Cloud Console → IAM & Admin → Service Accounts
-                2. Create a service account with Vision API & Translate API access
-                3. Generate and download JSON key file
-                4. In Render dashboard, add environment variable:
-                   - Key: GCP_SERVICE_ACCOUNT_JSON
-                   - Value: Paste entire JSON content
+                Please add your GCP service account credentials:
+                
+                1. **In Render Dashboard:**
+                   - Go to Environment tab
+                   - Add: GCP_SERVICE_ACCOUNT_JSON = [your-json-here]
+                
+                2. **Required APIs:**
+                   - Vision API
+                   - Cloud Translation API
                 """)
                 return False
 
         except Exception as e:
-            logging.error(f"❌ Failed to initialize GCP clients: {e}")
-            st.error(f"🚨 GCP authentication failed: {e}")
+            logging.error(f"❌ GCP initialization failed: {e}")
+            st.error(f"GCP initialization failed: {str(e)}")
             return False
 
     def _create_clients(self, credentials, method):
-        self.vision_client = vision.ImageAnnotatorClient(
-            credentials=credentials)
-        self.translate_client = translate.Client(credentials=credentials)
-        logging.info(f"✅ GCP clients initialized using {method}")
-        return True
+        try:
+            self.vision_client = vision.ImageAnnotatorClient(
+                credentials=credentials)
+            self.translate_client = translate.Client(credentials=credentials)
+            logging.info(f"✅ GCP clients initialized using {method}")
+            return True
+        except Exception as e:
+            logging.error(f"❌ Failed to create GCP clients: {e}")
+            return False

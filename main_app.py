@@ -14,47 +14,43 @@ def main():
     setup_page_config()
     st.title("Amazon Product Image Translator — GCP Vision + Translate")
 
-    # Check for GCP credentials first
-    if "GCP_SERVICE_ACCOUNT_JSON" not in os.environ and not st.secrets.get("gcp_service_account"):
-        st.error("""
-        🔐 **GCP Credentials Required!**
-        
-        Please set up your Google Cloud service account credentials in Render:
-        
-        1. **Go to Render Dashboard** → Your "ImaTranz" service
-        2. **Click "Environment"** tab  
-        3. **Add Environment Variable:**
-           - **Key:** `GCP_SERVICE_ACCOUNT_JSON`
-           - **Value:** Paste your entire GCP service account JSON content
-        
-        **How to get GCP credentials:**
-        - Go to [Google Cloud Console](https://console.cloud.google.com)
-        - Create a service account with **Vision API** and **Translate API** access
-        - Generate and download JSON key file
-        - Copy the entire JSON content into the Render environment variable
-        
-        The app will automatically redeploy once you add the credentials!
-        """)
-        return
-
     # Initialize session state
     if "results" not in st.session_state:
         st.session_state.results = []
     if "processor" not in st.session_state:
         st.session_state.processor = ImageProcessor()
-        try:
+
+        # Initialize GCP services with detailed feedback
+        with st.spinner("🔐 Initializing GCP services..."):
             success = st.session_state.processor.initialize_services()
-            if not success:
-                st.error(
-                    "Failed to initialize GCP services. Please check your credentials.")
-                st.stop()
-        except Exception as e:
-            st.error(f"🚨 Failed to initialize GCP services: {e}")
-            st.stop()
+
+        if not success:
+            st.error("""
+            🔐 **GCP Services Not Available**
+            
+            **To fix this:**
+            
+            1. **Add GCP credentials to Render:**
+               - Go to your Render dashboard → ImaTranz service → Environment
+               - Add: `GCP_SERVICE_ACCOUNT_JSON` = [your-json-here]
+            
+            2. **Get GCP credentials:**
+               - Visit [Google Cloud Console](https://console.cloud.google.com)
+               - Create service account with **Vision API** and **Translate API**
+               - Download JSON key file
+               - Copy entire JSON content into Render
+            
+            3. **Required permissions:**
+               - Cloud Translation API User
+               - Vision AI User
+            
+            The app will auto-redeploy once you add credentials!
+            """)
+            return
 
     # UI Components
     st.markdown(
-        "Paste an **Amazon product URL**. The app will fetch up to N images and translate to English using GCP.")
+        "Paste an **Amazon product URL** to translate images to English.")
 
     col1, col2 = st.columns([3, 1])
     with col2:
