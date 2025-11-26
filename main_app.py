@@ -2,7 +2,7 @@ import streamlit as st
 import tempfile
 import zipfile
 from io import BytesIO
-
+import os
 
 from config.settings import setup_page_config, MAX_IMAGES
 from services.image_processor import ImageProcessor
@@ -14,12 +14,13 @@ def main():
     setup_page_config()
     st.title("Amazon Product Image Translator — GCP Vision + Translate")
 
-    # Initialize session state with proper error handling
-    if "results" not in st.session_state:
-        st.session_state.results = []
+    # Debug info
+    st.sidebar.markdown("### 🔧 Debug Info")
+    st.sidebar.write(
+        f"GCP Env Var: {'GCP_SERVICE_ACCOUNT_JSON' in os.environ}")
 
-    if "gcp_initialized" not in st.session_state:
-        st.session_state.gcp_initialized = False
+    # Initialize processor with proper session handling
+    if "processor" not in st.session_state:
         st.session_state.processor = ImageProcessor()
 
         # Initialize GCP services
@@ -28,34 +29,53 @@ def main():
 
         if success:
             st.session_state.gcp_initialized = True
-            st.success("✅ GCP services initialized successfully!")
+            st.sidebar.success("✅ GCP initialized successfully!")
         else:
             st.session_state.gcp_initialized = False
-            st.error("""
-            🔐 **GCP Services Not Available**
-            
-            **To fix this:**
-            
-            1. **Add GCP credentials to Render:**
-               - Go to your Render dashboard → ImaTranz service → Environment
-               - Add: `GCP_SERVICE_ACCOUNT_JSON` = [your-json-here]
-            
-            2. **Get GCP credentials:**
-               - Visit [Google Cloud Console](https://console.cloud.google.com)
-               - Create service account with **Vision API** and **Translate API**
-               - Download JSON key file
-               - Copy entire JSON content into Render
-            
-            The app will auto-redeploy once you add credentials!
-            """)
-            return
+            st.sidebar.error("❌ GCP initialization failed")
 
-    # Only show the main app if GCP is initialized
+    # Check if GCP is actually working
+    if (hasattr(st.session_state.processor, 'gcp_services') and
+        st.session_state.processor.gcp_services and
+            st.session_state.processor.gcp_services.vision_client):
+
+        st.success("✅ GCP Services Ready! You can now translate Amazon images.")
+        st.session_state.gcp_initialized = True
+    else:
+        st.session_state.gcp_initialized = False
+
+    # Only show main app if GCP is working
     if not st.session_state.gcp_initialized:
-        st.warning("GCP services not initialized. Please refresh the page.")
+        st.error("""
+        🔐 **GCP Services Not Available**
+        
+        The logs show GCP is working, but there might be a session issue.
+        
+        **Please try:**
+        1. **Hard refresh** the page (Ctrl+F5)
+        2. **Clear browser cache**
+        3. **Try incognito/private window**
+        
+        If still not working, the GCP credentials might need Vision/Translate API access.
+        """)
         return
 
-    # UI Components
+    # Initialize results
+    if "results" not in st.session_state:
+        st.session_state.results = []
+
+    # Test GCP connection
+    if st.sidebar.button("Test GCP Connection"):
+        try:
+            test_text = ["Hello World"]
+            translated = st.session_state.processor.gcp_services.translate_texts(
+                test_text, target="es")
+            st.sidebar.success(
+                f"✅ GCP Test: '{test_text[0]}' → '{translated[0]}'")
+        except Exception as e:
+            st.sidebar.error(f"❌ GCP Test Failed: {e}")
+
+    # UI Components - only show if GCP is working
     st.markdown(
         "Paste an **Amazon product URL** to translate images to English.")
 
@@ -86,11 +106,14 @@ def main():
             st.success(
                 f"Found {len(image_urls)} image(s). Starting processing...")
 
-            results = st.session_state.processor.process_images_concurrently(
-                image_urls, max_images, timeout_per_image
-            )
-
-            st.session_state.results = results
+            try:
+                results = st.session_state.processor.process_images_concurrently(
+                    image_urls, max_images, timeout_per_image
+                )
+                st.session_state.results = results
+                st.success("✅ Processing completed successfully!")
+            except Exception as e:
+                st.error(f"Processing failed: {e}")
 
     # Display results
     if st.session_state.results:
