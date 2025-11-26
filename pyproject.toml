@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "amazon-image-translator"
+version = "1.0.0"
+dependencies = [
+    "streamlit>=1.28.0",
+    "numpy>=1.24.0",
+    "opencv-python-headless>=4.5.0",
+    "Pillow>=10.0.0",
+    "requests>=2.25.0",
+    "beautifulsoup4>=4.9.0",
+    "google-cloud-vision>=3.0.0",
+    "google-cloud-translate>=3.0.0",
+    "google-auth>=2.0.0"
+]
+
+[tool.setuptools]
+packages = [
+    "config",
+    "services", 
+    "utils",
+    "models"
+]
