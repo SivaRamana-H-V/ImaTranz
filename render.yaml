@@ -1,15 +1,18 @@
 services:
   - type: web
     name: amazon-image-translator
-    env: python
+    runtime: python
     plan: free
     branch: main
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
-    startCommand: streamlit run main_app.py --server.port=$PORT --server.address=0.0.0.0
+    startCommand: streamlit run main_app.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true --browser.gatherUsageStats=false
+    healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
       - key: GCP_SERVICE_ACCOUNT_JSON
         sync: false
+      - key: STREAMLIT_SERVER_HEADLESS
+        value: "true"

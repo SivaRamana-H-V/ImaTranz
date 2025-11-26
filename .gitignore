@@ -12,5 +12,3 @@ tmp/
 temp/
 *.zip
 
-# Ignore Streamlit cache
-.streamlit/
