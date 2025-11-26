@@ -1,21 +1,20 @@
 # Core Python libraries
-numpy
-opencv-python-headless
-Pillow
-matplotlib
+numpy>=1.24.0
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
+matplotlib>=3.7.0
 
 # Text processing
-beautifulsoup4
-requests
+beautifulsoup4>=4.12.0
+requests>=2.31.0
 
 # Google Cloud clients
-google-cloud-vision
-google-cloud-translate
-google-auth
-google-auth-oauthlib
+google-cloud-vision>=3.4.0
+google-cloud-translate>=3.11.0
+google-auth>=2.25.0
 
 # Streamlit app
-streamlit
+streamlit>=1.28.0
 
-# Others
-typing_extensions
+# Utilities
+typing_extensions>=4.8.0

@@ -2,7 +2,7 @@ import streamlit as st
 import tempfile
 import zipfile
 from io import BytesIO
-import os
+
 
 from config.settings import setup_page_config, MAX_IMAGES
 from services.image_processor import ImageProcessor
