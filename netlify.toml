@@ -1,0 +1,18 @@
+[build]
+command = "pip install -r requirements.txt && streamlit config show"
+publish = "."
+
+[functions]
+node_bundler = "esbuild"
+
+[[redirects]]
+from = "/*"
+to = "/index.html"
+status = 200
+
+[build.environment]
+PYTHON_VERSION = "3.11.10"
+STREAMLIT_SERVER_PORT = "8501"
+STREAMLIT_SERVER_ADDRESS = "0.0.0.0"
+STREAMLIT_SERVER_HEADLESS = "true"
+STREAMLIT_LOGGER_LEVEL = "info"
