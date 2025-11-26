@@ -2,6 +2,7 @@ import streamlit as st
 import tempfile
 import zipfile
 from io import BytesIO
+import os
 
 from config.settings import setup_page_config, MAX_IMAGES
 from services.image_processor import ImageProcessor
@@ -13,13 +14,40 @@ def main():
     setup_page_config()
     st.title("Amazon Product Image Translator — GCP Vision + Translate")
 
+    # Check for GCP credentials first
+    if "GCP_SERVICE_ACCOUNT_JSON" not in os.environ and not st.secrets.get("gcp_service_account"):
+        st.error("""
+        🔐 **GCP Credentials Required!**
+        
+        Please set up your Google Cloud service account credentials in Render:
+        
+        1. **Go to Render Dashboard** → Your "ImaTranz" service
+        2. **Click "Environment"** tab  
+        3. **Add Environment Variable:**
+           - **Key:** `GCP_SERVICE_ACCOUNT_JSON`
+           - **Value:** Paste your entire GCP service account JSON content
+        
+        **How to get GCP credentials:**
+        - Go to [Google Cloud Console](https://console.cloud.google.com)
+        - Create a service account with **Vision API** and **Translate API** access
+        - Generate and download JSON key file
+        - Copy the entire JSON content into the Render environment variable
+        
+        The app will automatically redeploy once you add the credentials!
+        """)
+        return
+
     # Initialize session state
     if "results" not in st.session_state:
         st.session_state.results = []
     if "processor" not in st.session_state:
         st.session_state.processor = ImageProcessor()
         try:
-            st.session_state.processor.initialize_services()
+            success = st.session_state.processor.initialize_services()
+            if not success:
+                st.error(
+                    "Failed to initialize GCP services. Please check your credentials.")
+                st.stop()
         except Exception as e:
             st.error(f"🚨 Failed to initialize GCP services: {e}")
             st.stop()

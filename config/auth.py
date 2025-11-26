@@ -19,12 +19,13 @@ class GCPAuth:
         try:
             # 1️⃣ Render Environment Variable (Primary)
             if "GCP_SERVICE_ACCOUNT_JSON" in os.environ:
-                creds_dict = json.loads(os.environ["GCP_SERVICE_ACCOUNT_JSON"])
+                creds_json = os.environ["GCP_SERVICE_ACCOUNT_JSON"]
+                creds_dict = json.loads(creds_json)
                 gcp_credentials = service_account.Credentials.from_service_account_info(
                     creds_dict)
                 return self._create_clients(gcp_credentials, "Render environment variable")
 
-            # 2️⃣ Streamlit secrets fallback
+            # 2️⃣ Streamlit secrets fallback (for local development)
             elif hasattr(st, 'secrets') and "gcp_service_account" in st.secrets:
                 gcp_credentials = service_account.Credentials.from_service_account_info(
                     st.secrets["gcp_service_account"]
@@ -32,14 +33,23 @@ class GCPAuth:
                 return self._create_clients(gcp_credentials, "Streamlit secrets")
 
             else:
-                raise Exception(
-                    "No GCP credentials found. Please set GCP_SERVICE_ACCOUNT_JSON environment variable in Render.")
+                st.error("""
+                🔐 GCP Credentials Required!
+                
+                Please set up your Google Cloud service account:
+                1. Go to Google Cloud Console → IAM & Admin → Service Accounts
+                2. Create a service account with Vision API & Translate API access
+                3. Generate and download JSON key file
+                4. In Render dashboard, add environment variable:
+                   - Key: GCP_SERVICE_ACCOUNT_JSON
+                   - Value: Paste entire JSON content
+                """)
+                return False
 
         except Exception as e:
             logging.error(f"❌ Failed to initialize GCP clients: {e}")
-            st.error(
-                "🚨 GCP authentication failed. Please check your service account credentials.")
-            raise Exception("GCP authentication failed")
+            st.error(f"🚨 GCP authentication failed: {e}")
+            return False
 
     def _create_clients(self, credentials, method):
         self.vision_client = vision.ImageAnnotatorClient(
