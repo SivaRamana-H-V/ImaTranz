@@ -14,16 +14,13 @@ def main():
     setup_page_config()
     st.title("Amazon Product Image Translator — GCP Vision + Translate")
 
-    # Debug info
-    st.sidebar.markdown("### 🔧 Debug Info")
-    st.sidebar.write(
-        f"GCP Env Var: {'GCP_SERVICE_ACCOUNT_JSON' in os.environ}")
-
     # Initialize processor with proper session handling
     if "processor" not in st.session_state:
         st.session_state.processor = ImageProcessor()
+        st.session_state.gcp_initialized = False
 
-        # Initialize GCP services
+    # Initialize GCP services if not already done
+    if not st.session_state.gcp_initialized:
         with st.spinner("🔐 Initializing GCP services..."):
             success = st.session_state.processor.initialize_services()
 
@@ -31,49 +28,30 @@ def main():
             st.session_state.gcp_initialized = True
             st.sidebar.success("✅ GCP initialized successfully!")
         else:
-            st.session_state.gcp_initialized = False
             st.sidebar.error("❌ GCP initialization failed")
 
     # Check if GCP is actually working
-    if (hasattr(st.session_state.processor, 'gcp_services') and
-        st.session_state.processor.gcp_services and
-            st.session_state.processor.gcp_services.vision_client):
-
-        st.success("✅ GCP Services Ready! You can now translate Amazon images.")
-        st.session_state.gcp_initialized = True
-    else:
-        st.session_state.gcp_initialized = False
+    gcp_working = False
+    if st.session_state.gcp_initialized:
+        if (hasattr(st.session_state.processor, 'gcp_services') and
+            st.session_state.processor.gcp_services and
+                st.session_state.processor.gcp_services.vision_client):
+            gcp_working = True
+            st.success(
+                "✅ GCP Services Ready! You can now translate Amazon images.")
+        else:
+            # Reset if clients are missing
+            st.session_state.gcp_initialized = False
+            st.rerun()
 
     # Only show main app if GCP is working
-    if not st.session_state.gcp_initialized:
-        st.error("""
-        🔐 **GCP Services Not Available**
-        
-        The logs show GCP is working, but there might be a session issue.
-        
-        **Please try:**
-        1. **Hard refresh** the page (Ctrl+F5)
-        2. **Clear browser cache**
-        3. **Try incognito/private window**
-        
-        If still not working, the GCP credentials might need Vision/Translate API access.
-        """)
+    if not gcp_working:
+        st.info("⏳ Waiting for GCP services to initialize...")
         return
 
     # Initialize results
     if "results" not in st.session_state:
         st.session_state.results = []
-
-    # Test GCP connection
-    if st.sidebar.button("Test GCP Connection"):
-        try:
-            test_text = ["Hello World"]
-            translated = st.session_state.processor.gcp_services.translate_texts(
-                test_text, target="es")
-            st.sidebar.success(
-                f"✅ GCP Test: '{test_text[0]}' → '{translated[0]}'")
-        except Exception as e:
-            st.sidebar.error(f"❌ GCP Test Failed: {e}")
 
     # UI Components - only show if GCP is working
     st.markdown(
