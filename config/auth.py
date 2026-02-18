@@ -14,70 +14,30 @@ class GCPAuth:
         self.translate_client = None
 
     def initialize_clients(self):
-        """Initialize GCP clients for both local development and Cloud Run"""
         try:
-            # METHOD 1: Environment variable with JSON string (Cloud Run / GitHub Secrets)
+            # 1. Try Cloud Run / Render (Environment Variable String)
             if "GCP_SERVICE_ACCOUNT_JSON" in os.environ:
-                logging.info("Found GCP_SERVICE_ACCOUNT_JSON in environment")
                 creds_json = os.environ["GCP_SERVICE_ACCOUNT_JSON"]
-                creds_dict = self._parse_json_credentials(creds_json)
+                creds_dict = json.loads(creds_json)
+                # Use .from_service_account_info for RAW TEXT
+                gcp_credentials = service_account.Credentials.from_service_account_info(
+                    creds_dict)
+                return self._create_clients(gcp_credentials, "Cloud Environment")
 
-                if creds_dict:
-                    credentials = service_account.Credentials.from_service_account_info(
-                        creds_dict)
-                    return self._create_clients(credentials, "Environment variable JSON")
+            # 2. Try Local Development (File Path)
+            elif os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'):
+                cred_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+                # Use .from_service_account_file for FILE PATHS
+                gcp_credentials = service_account.Credentials.from_service_account_file(
+                    cred_path)
+                return self._create_clients(gcp_credentials, "Local File")
 
-            # METHOD 2: File path environment variable (Local development)
-            elif "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
-                cred_path = os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
-                logging.info(
-                    f"Found GOOGLE_APPLICATION_CREDENTIALS: {cred_path}")
-
-                if os.path.exists(cred_path):
-                    credentials = service_account.Credentials.from_service_account_file(
-                        cred_path)
-                    return self._create_clients(credentials, "Credentials file")
-                else:
-                    logging.error(f"Credentials file not found: {cred_path}")
-
-            # METHOD 3: Look for common local credential files
             else:
-                # Check for common local credential files
-                local_paths = [
-                    "gcp-key.json",
-                    "credentials.json",
-                    "service-account.json",
-                    "E:\JD Sister Projects\Tranze\pivotal-robot-369519-6d5bdc432664.json",
-                    os.path.expanduser(
-                        "~/.config/gcloud/application_default_credentials.json")
-                ]
-
-                for path in local_paths:
-                    if os.path.exists(path):
-                        logging.info(f"Found local credentials: {path}")
-                        credentials = service_account.Credentials.from_service_account_file(
-                            path)
-                        return self._create_clients(credentials, f"Local file: {path}")
-
-            # METHOD 4: Mounted secret (Cloud Run specific)
-            if os.path.exists('/secrets/gcp-credentials.json'):
-                logging.info(
-                    "Found mounted secret at /secrets/gcp-credentials.json")
-                credentials = service_account.Credentials.from_service_account_file(
-                    '/secrets/gcp-credentials.json'
-                )
-                return self._create_clients(credentials, "Mounted secret")
-
-            # METHOD 5: Application Default Credentials (GCP services)
-            logging.info("Attempting Application Default Credentials")
-            self.vision_client = vision.ImageAnnotatorClient()
-            self.translate_client = translate.Client()
-            logging.info("✅ GCP clients initialized using ADC")
-            return True
+                print("No credentials found. Please check setup.")
+                return False
 
         except Exception as e:
-            logging.error(f"❌ GCP initialization failed: {e}")
-            self._print_help()
+            print(f"Initialization error: {str(e)}")
             return False
 
     def _parse_json_credentials(self, creds_json):
