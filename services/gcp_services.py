@@ -14,7 +14,7 @@ class GCPServices:
 
     def initialize(self):
         """Initialize GCP services"""
-        self.auth.initialize_clients()
+        # self.auth.initialize_clients()
         self.vision_client = self.auth.vision_client
         self.translate_client = self.auth.translate_client
 
