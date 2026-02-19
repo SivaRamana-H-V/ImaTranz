@@ -26,11 +26,11 @@ def main():
 
         if success:
             st.session_state.gcp_initialized = True
-            st.sidebar.success("✅ GCP initialized successfully!")
+            # st.success("✅ GCP initialized successfully!") # Removed as per request
         else:
             # Show detailed error
             error_msg = st.session_state.processor.initialization_error or "Unknown initialization error"
-            st.sidebar.error(f"❌ GCP initialization failed:\n{error_msg}")
+            st.error(f"❌ GCP initialization failed:\n{error_msg}")
 
     # Check if GCP is actually working
     gcp_working = False

@@ -18,29 +18,32 @@ class GCPAuth:
     def initialize_clients(self):
         """Initialize GCP services - returns True/False with error tracking"""
         try:
-            # 1. Check for the variable (Cloud Run / Secret Manager)
+            # 1. Attempt to load from environment variable (Local/Specific SA)
             raw_data = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
+            gcp_credentials = None
 
-            if not raw_data:
-                self.initialization_error = "GCP_SERVICE_ACCOUNT_JSON environment variable not found"
-                logger.error(self.initialization_error)
-                return False
-
-            # Check if it's a file path (Local) or actual JSON (Cloud)
-            if raw_data.strip().startswith('{'):
-                # It's actual JSON text - use .from_service_account_info()
-                creds_dict = json.loads(raw_data)
-                gcp_credentials = service_account.Credentials.from_service_account_info(
-                    creds_dict)
+            if raw_data:
+                # Check if it's a file path (Local) or actual JSON (Cloud/Secrets)
+                if raw_data.strip().startswith('{'):
+                    # It's actual JSON text
+                    creds_dict = json.loads(raw_data)
+                    gcp_credentials = service_account.Credentials.from_service_account_info(creds_dict)
+                    logger.info("✅ Loaded credentials from JSON string")
+                else:
+                    # It's a file path
+                    gcp_credentials = service_account.Credentials.from_service_account_file(raw_data)
+                    logger.info("✅ Loaded credentials from file path")
+            
             else:
-                # It's a file path - use .from_service_account_file()
-                gcp_credentials = service_account.Credentials.from_service_account_file(
-                    raw_data)
+                # 2. Fallback to Application Default Credentials (ADC) - Best for Cloud Run
+                import google.auth
+                gcp_credentials, project_id = google.auth.default()
+                logger.info(f"✅ Loaded Application Default Credentials (Project: {project_id})")
 
-            self.vision_client = vision.ImageAnnotatorClient(
-                credentials=gcp_credentials)
-            self.translate_client = translate.Client(
-                credentials=gcp_credentials)
+            # Initialize clients with the resolved credentials
+            self.vision_client = vision.ImageAnnotatorClient(credentials=gcp_credentials)
+            self.translate_client = translate.Client(credentials=gcp_credentials)
+            
             logger.info("✅ GCP clients initialized successfully")
             return True
 
