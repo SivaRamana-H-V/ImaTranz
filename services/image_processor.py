@@ -76,7 +76,10 @@ class ImageProcessor:
         return cleaned, final, meta
 
     def process_images_concurrently(self, image_urls: List[str], max_images: int, timeout_per_image: int) -> List:
-        """Process multiple images concurrently"""
+        """Process multiple images concurrently and save to disk"""
+        import tempfile
+        import os
+        
         scraper = AmazonScraper()
         results = []
 
@@ -95,12 +98,34 @@ class ImageProcessor:
             # Process images
             proc_futs = {ex.submit(self.process_image_gcp, upscale_image(img, scale_factor=2)): u
                          for u, img in downloaded.items()}
+            
             for fut in concurrent.futures.as_completed(proc_futs, timeout=timeout_per_image * len(proc_futs)):
                 u = proc_futs[fut]
                 try:
                     cleaned, final_img, meta = fut.result()
+                    orig = downloaded[u]
+
+                    # --- SAVE TO DISK (Fix for Cloud Run Memory Issue) ---
+                    
+                    # 1. Save Original
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_orig:
+                        orig.save(tmp_orig.name, format="PNG")
+                        orig_path = tmp_orig.name
+                    
+                    # 2. Save Cleaned (Inpainted)
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_clean:
+                        cleaned.save(tmp_clean, format="PNG")
+                        cleaned_path = tmp_clean.name
+
+                    # 3. Save Final (Translated)
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_final:
+                        final_img.save(tmp_final, format="PNG")
+                        final_path = tmp_final.name
+
+                    # Return PATHS instead of PIL objects
                     results.append(
-                        (u, downloaded[u], cleaned, final_img, meta))
+                        (u, orig_path, cleaned_path, final_path, meta))
+                        
                 except Exception as e:
                     logging.warning(f"Processing failed for {u}: {e}")
 

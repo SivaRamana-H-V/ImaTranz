@@ -3,6 +3,7 @@ import tempfile
 import zipfile
 from io import BytesIO
 import os
+from PIL import Image
 
 from config.settings import setup_page_config, MAX_IMAGES
 from services.image_processor import ImageProcessor
@@ -98,7 +99,16 @@ def main():
     # Display results
     if st.session_state.results:
         results = st.session_state.results
-        for idx, (url_img, orig, cleaned, final_img, meta) in enumerate(results):
+        for idx, (url_img, orig_path, cleaned_path, final_img_path, meta) in enumerate(results):
+            
+            # Load images from disk (Critical for Cloud Run persistence)
+            try:
+                orig = Image.open(orig_path)
+                final_img = Image.open(final_img_path)
+            except Exception as e:
+                st.error(f"Error loading image files: {e}")
+                continue
+
             st.markdown(f"### Image {idx+1}")
             c1, c2 = st.columns(2)
             with c1:
@@ -121,10 +131,12 @@ def main():
         if st.checkbox("Create ZIP of translated images"):
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
             with zipfile.ZipFile(tmp.name, "w") as zf:
-                for i, (_, _, _, final_img, _) in enumerate(results):
-                    b = BytesIO()
-                    final_img.save(b, format="PNG")
-                    zf.writestr(f"translated_{i+1}.png", b.getvalue())
+                for i, (_, _, _, final_img_path, _) in enumerate(results):
+                    # Write directly from disk to ZIP
+                    try:
+                        zf.write(final_img_path, arcname=f"translated_{i+1}.png")
+                    except Exception as e:
+                        st.error(f"Error zipping file {i+1}: {e}")
 
             with open(tmp.name, "rb") as fh:
                 st.download_button(
