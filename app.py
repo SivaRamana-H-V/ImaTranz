@@ -28,7 +28,9 @@ def main():
             st.session_state.gcp_initialized = True
             st.sidebar.success("✅ GCP initialized successfully!")
         else:
-            st.sidebar.error("❌ GCP initialization failed")
+            # Show detailed error
+            error_msg = st.session_state.processor.initialization_error or "Unknown initialization error"
+            st.sidebar.error(f"❌ GCP initialization failed:\n{error_msg}")
 
     # Check if GCP is actually working
     gcp_working = False

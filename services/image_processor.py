@@ -10,14 +10,21 @@ from config.settings import FONT_PATH, BOX_EXPANSION_INPAINT
 
 logging.basicConfig(level=logging.INFO)
 
+
 class ImageProcessor:
     def __init__(self):
         self.gcp_services = GCPServices()
         self.text_overlay = TextOverlay(FONT_PATH)
+        self.initialization_error = None
 
     def initialize_services(self):
-        """Initialize GCP services"""
-        self.gcp_services.initialize()
+        """Initialize GCP services - returns True/False"""
+        success = self.gcp_services.initialize()
+
+        if not success:
+            self.initialization_error = self.gcp_services.initialization_error
+
+        return success
 
     def process_image_gcp(self, pil_img: Image.Image) -> Tuple[Image.Image, Image.Image, Dict]:
         """Full image processing pipeline"""
@@ -33,7 +40,8 @@ class ImageProcessor:
         # Translation
         translated_blocks = self.translate_text(blocks)
         # Inpainting and overlay
-        cleaned, final_img, meta = self.process_inpaint_pipeline(pil_img.copy(), translated_blocks)
+        cleaned, final_img, meta = self.process_inpaint_pipeline(
+            pil_img.copy(), translated_blocks)
         meta["detected"] = len(translated_blocks)
         return cleaned, final_img, meta
 
@@ -51,7 +59,8 @@ class ImageProcessor:
     def process_inpaint_pipeline(self, img_pil: Image.Image, annotations: List[Dict]) -> Tuple[Image.Image, Image.Image, Dict]:
         """Complete inpainting and text overlay pipeline"""
         # Remove original text
-        mask = create_mask_for_boxes(img_pil.size, annotations, expand=BOX_EXPANSION_INPAINT)
+        mask = create_mask_for_boxes(
+            img_pil.size, annotations, expand=BOX_EXPANSION_INPAINT)
         cleaned = inpaint_with_opencv(img_pil, mask, method='telea')
 
         # Overlay translated text
@@ -73,7 +82,8 @@ class ImageProcessor:
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(image_urls))) as ex:
             # Download images
-            download_futs = {ex.submit(scraper.download_image, u): u for u in image_urls}
+            download_futs = {
+                ex.submit(scraper.download_image, u): u for u in image_urls}
             downloaded = {}
             for fut in concurrent.futures.as_completed(download_futs, timeout=timeout_per_image * len(image_urls)):
                 u = download_futs[fut]
@@ -83,13 +93,14 @@ class ImageProcessor:
                     logging.warning(f"Failed download {u}: {e}")
 
             # Process images
-            proc_futs = {ex.submit(self.process_image_gcp, upscale_image(img, scale_factor=2)): u 
-                        for u, img in downloaded.items()}
+            proc_futs = {ex.submit(self.process_image_gcp, upscale_image(img, scale_factor=2)): u
+                         for u, img in downloaded.items()}
             for fut in concurrent.futures.as_completed(proc_futs, timeout=timeout_per_image * len(proc_futs)):
                 u = proc_futs[fut]
                 try:
                     cleaned, final_img, meta = fut.result()
-                    results.append((u, downloaded[u], cleaned, final_img, meta))
+                    results.append(
+                        (u, downloaded[u], cleaned, final_img, meta))
                 except Exception as e:
                     logging.warning(f"Processing failed for {u}: {e}")
 

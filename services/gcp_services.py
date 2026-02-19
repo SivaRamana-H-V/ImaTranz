@@ -11,12 +11,19 @@ class GCPServices:
         self.auth = GCPAuth()
         self.vision_client = None
         self.translate_client = None
+        self.initialization_error = None
 
     def initialize(self):
-        """Initialize GCP services"""
-        self.auth.initialize_clients()
-        self.vision_client = self.auth.vision_client
-        self.translate_client = self.auth.translate_client
+        """Initialize GCP services - returns True/False"""
+        success = self.auth.initialize_clients()
+
+        if success:
+            self.vision_client = self.auth.vision_client
+            self.translate_client = self.auth.translate_client
+            return True
+        else:
+            self.initialization_error = self.auth.initialization_error
+            return False
 
     def vision_ocr_paragraphs(self, pil_img):
         """Extract paragraph-level text using Vision API"""
