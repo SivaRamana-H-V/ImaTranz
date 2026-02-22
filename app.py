@@ -24,7 +24,7 @@ def image_to_base64(pil_img: Image.Image) -> str:
 
 def main():
     setup_page_config()
-    st.title("Amazon Product Image Translator — GCP Vision + Translate")
+    st.title("Amazon Product Image Translator")
 
     # Initialize processor with proper session handling
     if "processor" not in st.session_state:
@@ -51,8 +51,6 @@ def main():
             st.session_state.processor.gcp_services and
                 st.session_state.processor.gcp_services.vision_client):
             gcp_working = True
-            st.success(
-                "✅ GCP Services Ready! You can now translate Amazon images.")
         else:
             # Reset if clients are missing
             st.session_state.gcp_initialized = False
@@ -70,12 +68,6 @@ def main():
     # UI Components - only show if GCP is working
     st.markdown(
         "Paste an **Amazon product URL** to translate images to English.")
-
-    col1, col2 = st.columns([3, 1])
-    with col2:
-        max_images = st.number_input(
-            "Max images to process", 1, 100, MAX_IMAGES)
-        timeout_per_image = st.slider("Per-image timeout (sec)", 5, 40, 15)
 
     url = st.text_input("Amazon product URL",
                         placeholder="https://amzn.asia/d/...")
@@ -100,7 +92,7 @@ def main():
 
             try:
                 results = st.session_state.processor.process_images_concurrently(
-                    image_urls, max_images, timeout_per_image
+                    image_urls, max_images, 15
                 )
                 st.session_state.results = results
                 st.success("✅ Processing completed successfully!")
