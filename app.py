@@ -11,6 +11,17 @@ from services.amazon_scraper import AmazonScraper
 from utils.image_utils import upscale_image
 
 
+def image_to_base64(pil_img: Image.Image) -> str:
+    """Convert PIL image to base64 data URL"""
+    import io
+    import base64
+    buf = io.BytesIO()
+    # Save as PNG to preserve quality, or JPEG for smaller size
+    pil_img.save(buf, format="PNG")
+    img_str = base64.b64encode(buf.getvalue()).decode()
+    return f"data:image/png;base64,{img_str}"
+
+
 def main():
     setup_page_config()
     st.title("Amazon Product Image Translator — GCP Vision + Translate")
@@ -112,9 +123,9 @@ def main():
             st.markdown(f"### Image {idx+1}")
             c1, c2 = st.columns(2)
             with c1:
-                st.image(upscale_image(orig), caption="Original")
+                st.image(image_to_base64(upscale_image(orig)), caption="Original")
             with c2:
-                st.image(final_img, caption="Translated (English)")
+                st.image(image_to_base64(final_img), caption="Translated (English)")
 
             if meta.get("detected") and meta.get("detected") > 0:
                 c11, c12 = st.columns([1, 2])
